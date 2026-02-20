@@ -7,7 +7,7 @@ Pulls the **remote MySQL production database** directly into a local Docker MySQ
 ## How It Works
 
 ```
-Remote MySQL (35.244.12.248:3306)
+Remote MySQL (10.10.0.1:3306)
            │
            │  mysqldump (direct TCP)
            ▼
@@ -23,11 +23,11 @@ Remote MySQL (35.244.12.248:3306)
 
 ## Prerequisites
 
-| Tool | Install |
-|---|---|
-| Docker & Docker Compose | https://docs.docker.com/get-docker/ |
-| `mysqldump` (mysql-client) | `sudo apt install mysql-client` |
-| `jq` | `sudo apt install jq` |
+| Tool                       | Install                             |
+| -------------------------- | ----------------------------------- |
+| Docker & Docker Compose    | https://docs.docker.com/get-docker/ |
+| `mysqldump` (mysql-client) | `sudo apt install mysql-client`     |
+| `jq`                       | `sudo apt install jq`               |
 
 ---
 
@@ -54,21 +54,21 @@ Copy the template and set your values:
 cp .env.example .env
 ```
 
-| Variable | Description |
-|---|---|
-| `PROD_DB_HOST` | Remote MySQL host IP |
-| `PROD_DB_PORT` | Remote MySQL port (default `3306`) |
-| `PROD_DB_NAME` | Production database name |
-| `PROD_DB_USER` | Production MySQL user |
-| `PROD_DB_PASS` | Production MySQL password |
-| `MYSQL_ROOT_PASSWORD` | Local MySQL root password |
-| `MYSQL_DATABASE` | Local database name (restored into) |
-| `MYSQL_LOCAL_PORT` | Host port for local MySQL (default `3306`) |
-| `MYSQL_USERS_JSON` | JSON array of users to create locally |
-| `SYNC_INTERVAL_HOURS` | `2` or `3` — cron interval |
-| `SYNC_CRON_OVERRIDE` | Custom cron expression (overrides interval) |
-| `BACKUP_DIR` | Where `.sql.gz` dumps are stored |
-| `LOG_DIR` | Where sync logs are written |
+| Variable              | Description                                 |
+| --------------------- | ------------------------------------------- |
+| `PROD_DB_HOST`        | Remote MySQL host IP                        |
+| `PROD_DB_PORT`        | Remote MySQL port (default `3306`)          |
+| `PROD_DB_NAME`        | Production database name                    |
+| `PROD_DB_USER`        | Production MySQL user                       |
+| `PROD_DB_PASS`        | Production MySQL password                   |
+| `MYSQL_ROOT_PASSWORD` | Local MySQL root password                   |
+| `MYSQL_DATABASE`      | Local database name (restored into)         |
+| `MYSQL_LOCAL_PORT`    | Host port for local MySQL (default `3306`)  |
+| `MYSQL_USERS_JSON`    | JSON array of users to create locally       |
+| `SYNC_INTERVAL_HOURS` | `2` or `3` — cron interval                  |
+| `SYNC_CRON_OVERRIDE`  | Custom cron expression (overrides interval) |
+| `BACKUP_DIR`          | Where `.sql.gz` dumps are stored            |
+| `LOG_DIR`             | Where sync logs are written                 |
 
 ### MySQL Users JSON
 
@@ -79,11 +79,11 @@ MYSQL_USERS_JSON='[
 ]'
 ```
 
-| Field | Description |
-|---|---|
-| `user` | MySQL username |
-| `password` | User password |
-| `host` | `%` = any host, `localhost` = local only |
+| Field        | Description                                              |
+| ------------ | -------------------------------------------------------- |
+| `user`       | MySQL username                                           |
+| `password`   | User password                                            |
+| `host`       | `%` = any host, `localhost` = local only                 |
 | `privileges` | `ALL PRIVILEGES`, `SELECT`, `SELECT,INSERT,UPDATE`, etc. |
 
 ---
@@ -103,6 +103,7 @@ chmod +x setup.sh sync.sh
 ```
 
 `setup.sh` will:
+
 - Start local MySQL via Docker Compose and wait for it to be healthy
 - Create all users from `MYSQL_USERS_JSON`
 - Register the cron job (`0 */2 * * *` by default)
@@ -127,6 +128,7 @@ Idempotent — safe to re-run. Recreates users and updates the cron entry.
 ```
 
 Steps:
+
 1. `mysqldump` remote DB → compressed `dump_YYYYMMDD_HHMMSS.sql.gz`
 2. `CREATE DATABASE IF NOT EXISTS` in local MySQL
 3. Restore dump into `mysql_local` container
@@ -162,13 +164,14 @@ mysql -h 127.0.0.1 -P 3306 -u root -p
 
 ## Sync Schedule
 
-| Setting | Result |
-|---|---|
-| `SYNC_INTERVAL_HOURS=2` | `0 */2 * * *` — every 2 hours |
-| `SYNC_INTERVAL_HOURS=3` | `0 */3 * * *` — every 3 hours |
-| `SYNC_CRON_OVERRIDE=30 1,4,7 * * *` | Uses exact expression |
+| Setting                             | Result                        |
+| ----------------------------------- | ----------------------------- |
+| `SYNC_INTERVAL_HOURS=2`             | `0 */2 * * *` — every 2 hours |
+| `SYNC_INTERVAL_HOURS=3`             | `0 */3 * * *` — every 3 hours |
+| `SYNC_CRON_OVERRIDE=30 1,4,7 * * *` | Uses exact expression         |
 
 Check registered cron:
+
 ```bash
 crontab -l
 ```
@@ -177,10 +180,10 @@ crontab -l
 
 ## Logs & Backups
 
-| Path | Contents |
-|---|---|
-| `$LOG_DIR/sync_YYYYMMDD_HHMMSS.log` | Per-sync log |
-| `$LOG_DIR/cron.log` | Aggregated cron output |
+| Path                                      | Contents                        |
+| ----------------------------------------- | ------------------------------- |
+| `$LOG_DIR/sync_YYYYMMDD_HHMMSS.log`       | Per-sync log                    |
+| `$LOG_DIR/cron.log`                       | Aggregated cron output          |
 | `$BACKUP_DIR/dump_YYYYMMDD_HHMMSS.sql.gz` | Compressed dumps (last 10 kept) |
 
 ```bash
@@ -199,14 +202,14 @@ gunzip < /tmp/erp_backups/dump_20240601_120000.sql.gz \
 
 ## Troubleshooting
 
-| Symptom | Fix |
-|---|---|
-| `mysqldump: Access denied` | Check `PROD_DB_USER` / `PROD_DB_PASS` in `.env` |
-| `Can't connect to MySQL server` | Verify `PROD_DB_HOST` is reachable: `telnet 35.244.12.248 3306` |
-| `mysql_local not running` | Run `docker-compose up -d` |
-| `MySQL did not become ready` | `docker-compose logs mysql_local` — check root password |
-| Cron not running | `crontab -l` — verify entry; check `$LOG_DIR/cron.log` |
-| `jq: command not found` | `sudo apt install jq` |
+| Symptom                         | Fix                                                         |
+| ------------------------------- | ----------------------------------------------------------- |
+| `mysqldump: Access denied`      | Check `PROD_DB_USER` / `PROD_DB_PASS` in `.env`             |
+| `Can't connect to MySQL server` | Verify `PROD_DB_HOST` is reachable: `telnet 10.10.0.1 3306` |
+| `mysql_local not running`       | Run `docker-compose up -d`                                  |
+| `MySQL did not become ready`    | `docker-compose logs mysql_local` — check root password     |
+| Cron not running                | `crontab -l` — verify entry; check `$LOG_DIR/cron.log`      |
+| `jq: command not found`         | `sudo apt install jq`                                       |
 
 ---
 
