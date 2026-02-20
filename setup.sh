@@ -22,7 +22,7 @@ log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 
 # ── 1. Dependency checks ──────────────────────────────────────────────────────
 log "Checking dependencies …"
-for cmd in docker docker-compose jq mysqldump; do
+for cmd in docker docker-compose jq mysql mysqldump; do
   if ! command -v "$cmd" &>/dev/null; then
     echo "[ERROR] Required command not found: $cmd"
     exit 1
@@ -71,7 +71,7 @@ for i in $(seq 0 $((USER_COUNT - 1))); do
     -e "
       CREATE USER IF NOT EXISTS '${DB_USER}'@'${DB_HOST}'
         IDENTIFIED WITH mysql_native_password BY '${DB_PASS}';
-      GRANT ${DB_PRIVS} ON \`${MYSQL_DATABASE}\`.* TO '${DB_USER}'@'${DB_HOST}';
+      GRANT ${DB_PRIVS} ON *.* TO '${DB_USER}'@'${DB_HOST}';
       FLUSH PRIVILEGES;
     " 2>&1
 done
@@ -112,7 +112,7 @@ log "╔════════════════════════
 log "║            Setup Complete                            ║"
 log "╠══════════════════════════════════════════════════════╣"
 log "║  Local MySQL  : localhost:${MYSQL_LOCAL_PORT:-3306}                  ║"
-log "║  Database     : ${MYSQL_DATABASE}                          ║"
+log "║  Databases    : ALL (system DBs excluded)            ║"
 log "║  Sync cron    : ${CRON_EXPR}                    ║"
 log "║  Logs         : ${LOG_DIR:-/var/log/erp_sync}                ║"
 log "╚══════════════════════════════════════════════════════╝"
