@@ -23,11 +23,20 @@ Remote MySQL (10.10.0.1:3306)
 
 ## Prerequisites
 
-| Tool                       | Install                             |
-| -------------------------- | ----------------------------------- |
-| Docker & Docker Compose    | https://docs.docker.com/get-docker/ |
-| `mysqldump` (mysql-client) | `sudo apt install mysql-client`     |
-| `jq`                       | `sudo apt install jq`               |
+Run the installer script — it handles everything automatically:
+
+```bash
+chmod +x install_prerequisites.sh
+./install_prerequisites.sh
+```
+
+| Tool | Supported OS |
+|---|---|
+| Docker & Docker Compose | Ubuntu, Debian, CentOS, RHEL, Fedora, Amazon Linux, macOS |
+| `mysqldump` (mysql-client) | All of the above |
+| `jq` | All of the above |
+
+> **macOS:** Docker Desktop must be installed manually from https://docs.docker.com/desktop/install/mac-install/ — all other tools are installed via Homebrew automatically.
 
 ---
 
