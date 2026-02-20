@@ -69,7 +69,8 @@ for i in $(seq 0 $((USER_COUNT - 1))); do
   docker exec mysql_local mysql \
     -uroot -p"${MYSQL_ROOT_PASSWORD}" \
     -e "
-      CREATE USER IF NOT EXISTS '${DB_USER}'@'${DB_HOST}' IDENTIFIED BY '${DB_PASS}';
+      CREATE USER IF NOT EXISTS '${DB_USER}'@'${DB_HOST}'
+        IDENTIFIED WITH mysql_native_password BY '${DB_PASS}';
       GRANT ${DB_PRIVS} ON \`${MYSQL_DATABASE}\`.* TO '${DB_USER}'@'${DB_HOST}';
       FLUSH PRIVILEGES;
     " 2>&1
