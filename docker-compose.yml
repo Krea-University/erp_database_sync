@@ -1,14 +1,9 @@
 version: "3.9"
 
 # =============================================================================
-#  docker-compose.yml  –  Local MySQL + optional app service
-#  All sensitive values come from .env (same directory)
+#  docker-compose.yml  –  Local MySQL only
+#  Values sourced from .env in the same directory
 # =============================================================================
-
-networks:
-  erp_net:
-    name: ${DOCKER_NETWORK:-erp_net}
-    driver: bridge
 
 volumes:
   mysql_data:
@@ -16,46 +11,22 @@ volumes:
 
 services:
 
-  # ── Local MySQL ────────────────────────────────────────────────────────────
   mysql_local:
     image: mysql:8.0
     container_name: mysql_local
     restart: unless-stopped
-    networks:
-      - erp_net
     ports:
-      - "${MYSQL_PORT:-3306}:3306"
+      - "${MYSQL_LOCAL_PORT:-3306}:3306"
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
       MYSQL_DATABASE:      ${MYSQL_DATABASE}
     volumes:
       - mysql_data:/var/lib/mysql
-      - ./init:/docker-entrypoint-initdb.d:ro   # optional .sql init scripts
+      - ./init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost",
-             "-u", "root", "-p${MYSQL_ROOT_PASSWORD}"]
+             "-uroot", "-p${MYSQL_ROOT_PASSWORD}"]
       interval: 10s
       timeout:  5s
       retries:  10
       start_period: 30s
-
-  # ── Application (started by setup.sh with docker run, but also declarable) ──
-  # Uncomment and adjust if you prefer Compose to manage the app too.
-  #
-  # app:
-  #   image: ${APP_DOCKER_IMAGE}
-  #   container_name: ${APP_CONTAINER_NAME:-erp_app}
-  #   restart: unless-stopped
-  #   networks:
-  #     - erp_net
-  #   ports:
-  #     - "${APP_PORT:-8080}:${APP_PORT:-8080}"
-  #   env_file:
-  #     - .credentials.env
-  #   environment:
-  #     MYSQL_HOST: mysql_local
-  #     MYSQL_PORT: "3306"
-  #     MYSQL_DATABASE: ${MYSQL_DATABASE}
-  #   depends_on:
-  #     mysql_local:
-  #       condition: service_healthy
