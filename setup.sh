@@ -22,7 +22,7 @@ log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 
 # ── 1. Dependency checks ──────────────────────────────────────────────────────
 log "Checking dependencies …"
-for cmd in docker docker-compose jq mysql mysqldump; do
+for cmd in docker docker-compose jq; do
   if ! command -v "$cmd" &>/dev/null; then
     echo "[ERROR] Required command not found: $cmd"
     exit 1

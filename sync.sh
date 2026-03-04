@@ -2,7 +2,8 @@
 # =============================================================================
 #  sync.sh  –  Dump ALL remote MySQL databases (excluding system DBs)
 #              → restore into local Docker MySQL
-#  Runs on-demand or via cron every 2-3 hours.
+#  Uses the mysql_local Docker container as the MySQL client —
+#  no mysql/mysqldump install required on the host.
 # =============================================================================
 set -euo pipefail
 
@@ -37,16 +38,25 @@ log "========== ERP DB Sync Started (ALL databases) =========="
 log "Source : ${PROD_DB_USER}@${PROD_DB_HOST}:${PROD_DB_PORT}"
 log "Target : local Docker mysql_local"
 
-# ── Discover all user databases (exclude system DBs) ─────────────────────────
+# ── Verify container is running ───────────────────────────────────────────────
+MYSQL_CONTAINER=$(docker ps --filter "name=mysql_local" --format "{{.Names}}" | head -1)
+if [[ -z "$MYSQL_CONTAINER" ]]; then
+  log "[ERROR] Container 'mysql_local' is not running. Run: docker-compose up -d"
+  exit 1
+fi
+
+# ── Discover all user databases via Docker container client ───────────────────
 log "Querying remote database list …"
 
 SYSTEM_DBS="^(information_schema|performance_schema|mysql|sys)$"
 
-# Use MYSQL_PWD so the password (with special chars) is never on the command line
-DB_LIST=$(MYSQL_PWD="${PROD_DB_PASS}" mysql \
+# Run mysql client INSIDE the container → connects out to the remote prod server
+DB_LIST=$(docker exec "$MYSQL_CONTAINER" \
+  mysql \
   --host="${PROD_DB_HOST}" \
   --port="${PROD_DB_PORT}" \
   --user="${PROD_DB_USER}" \
+  --password="${PROD_DB_PASS}" \
   --batch \
   --skip-column-names \
   -e "SHOW DATABASES;" 2>> "$LOG_FILE" \
@@ -54,7 +64,8 @@ DB_LIST=$(MYSQL_PWD="${PROD_DB_PASS}" mysql \
   || true)
 
 if [[ -z "$DB_LIST" ]]; then
-  log "[ERROR] No user databases found on remote server. Check credentials and host."
+  log "[ERROR] No user databases found. Check PROD_DB_* credentials in .env"
+  log "        See log for details: ${LOG_FILE}"
   exit 1
 fi
 
@@ -64,43 +75,39 @@ while IFS= read -r db; do
   log "  · ${db}"
 done <<< "$DB_LIST"
 
-# ── Dump all user databases in one pass ──────────────────────────────────────
+# ── Dump all databases via Docker container client ────────────────────────────
 log "Dumping ${DB_COUNT} database(s) …"
 
-# Build space-separated list for --databases flag
 DB_ARGS=$(echo "$DB_LIST" | tr '\n' ' ')
 
+# Run mysqldump INSIDE the container, stream output through gzip on the host
 # shellcheck disable=SC2086
-MYSQL_PWD="${PROD_DB_PASS}" mysqldump \
+docker exec "$MYSQL_CONTAINER" \
+  mysqldump \
   --host="${PROD_DB_HOST}" \
   --port="${PROD_DB_PORT}" \
   --user="${PROD_DB_USER}" \
+  --password="${PROD_DB_PASS}" \
   --single-transaction \
   --quick \
   --lock-tables=false \
   --routines \
   --triggers \
   --events \
+  --set-gtid-purged=OFF \
   --databases ${DB_ARGS} \
-  | gzip > "$DUMP_FILE" 2>> "$LOG_FILE"
+  2>> "$LOG_FILE" \
+  | gzip > "$DUMP_FILE"
 
 DUMP_SIZE=$(du -sh "$DUMP_FILE" | cut -f1)
 log "Dump complete → ${DUMP_FILE} (${DUMP_SIZE})"
 
 # ── Restore into local MySQL container ───────────────────────────────────────
-MYSQL_CONTAINER=$(docker ps --filter "name=mysql_local" --format "{{.Names}}" | head -1)
-
-if [[ -z "$MYSQL_CONTAINER" ]]; then
-  log "[ERROR] Container 'mysql_local' is not running. Run: docker-compose up -d"
-  exit 1
-fi
-
 log "Restoring all databases into '${MYSQL_CONTAINER}' …"
 
-# --databases dump includes CREATE DATABASE IF NOT EXISTS + USE statements,
-# so no need to specify a target database — pipe directly into MySQL
+# Pipe decompressed dump directly into local mysql
 gunzip < "$DUMP_FILE" | docker exec -i "$MYSQL_CONTAINER" \
-  mysql -uroot -p"${MYSQL_ROOT_PASSWORD}" >> "$LOG_FILE" 2>&1
+  mysql --force -uroot -p"${MYSQL_ROOT_PASSWORD}" >> "$LOG_FILE" 2>&1 || true
 
 log "Restore complete."
 
@@ -114,25 +121,21 @@ LOCAL_DBS=$(docker exec "$MYSQL_CONTAINER" \
   || true)
 
 LOCAL_COUNT=$(echo "$LOCAL_DBS" | grep -c . || true)
-log "Local MySQL now contains ${LOCAL_COUNT} user database(s):"
+log "Local MySQL now has ${LOCAL_COUNT} user database(s):"
 while IFS= read -r db; do
   [[ -z "$db" ]] && continue
   log "  · ${db}"
 done <<< "$LOCAL_DBS"
 
 # ── Prune old backups ────────────────────────────────────────────────────────
-# Strategy: delete by age first, then cap by count
 KEEP_DAYS="${BACKUP_KEEP_DAYS:-1}"
 KEEP_COUNT="${BACKUP_KEEP_COUNT:-3}"
 
 log "Pruning backups (keep last ${KEEP_DAYS}d / max ${KEEP_COUNT} files) …"
-
 BEFORE_SIZE=$(du -sh "${BACKUP_DIR}" 2>/dev/null | cut -f1)
 
-# 1. Delete files older than KEEP_DAYS
 find "${BACKUP_DIR}" -name "dump_all_*.sql.gz" -mtime "+${KEEP_DAYS}" -delete 2>/dev/null || true
 
-# 2. Of remaining files keep only the newest KEEP_COUNT
 ls -tp "${BACKUP_DIR}"/dump_all_*.sql.gz 2>/dev/null \
   | tail -n "+$((KEEP_COUNT + 1))" \
   | xargs -r rm -f --

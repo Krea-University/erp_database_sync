@@ -13,9 +13,9 @@ services:
     image: mysql:8.0
     container_name: mysql_local
     restart: unless-stopped
-    # Use mysql_native_password so older clients (mysqldump, mysql-client)
-    # can connect without the caching_sha2_password plugin (Error 2058)
-    command: --default-authentication-plugin=mysql_native_password
+    command:
+      - --default-authentication-plugin=mysql_native_password
+      - --sha256-password-auto-generate-rsa-keys=OFF
     ports:
       - "${MYSQL_LOCAL_PORT:-3306}:3306"
     environment:
@@ -23,6 +23,7 @@ services:
     volumes:
       - mysql_data:/var/lib/mysql
       - ./init:/docker-entrypoint-initdb.d:ro
+      - ./conf/my.cnf:/etc/mysql/conf.d/local.cnf:ro
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost",
              "-uroot", "-p${MYSQL_ROOT_PASSWORD}"]
