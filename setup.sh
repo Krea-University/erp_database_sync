@@ -22,17 +22,37 @@ log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 
 # ── 1. Dependency checks ──────────────────────────────────────────────────────
 log "Checking dependencies …"
-for cmd in docker docker-compose jq; do
-  if ! command -v "$cmd" &>/dev/null; then
-    echo "[ERROR] Required command not found: $cmd"
-    exit 1
-  fi
-done
+if ! command -v docker &>/dev/null; then
+  echo "[ERROR] 'docker' not found. Install Docker Desktop and try again."
+  exit 1
+fi
+
+# Detect docker compose (v2 plugin) vs docker-compose (v1 standalone)
+if docker compose version &>/dev/null 2>&1; then
+  COMPOSE="docker compose"
+elif command -v docker-compose &>/dev/null; then
+  COMPOSE="docker-compose"
+else
+  echo "[ERROR] Neither 'docker compose' nor 'docker-compose' found."
+  echo "        Install Docker Desktop (includes compose plugin) or run:"
+  echo "        sudo apt install docker-compose-plugin"
+  exit 1
+fi
+log "Using compose command: ${COMPOSE}"
+
+# Detect jq — fall back to Docker image if not installed on host
+if command -v jq &>/dev/null; then
+  JQ="jq"
+else
+  log "jq not found on host — using Docker fallback (ghcr.io/jqlang/jq)"
+  JQ="docker run --rm -i ghcr.io/jqlang/jq:latest"
+fi
+
 log "All dependencies OK."
 
 # ── 2. Start local MySQL ──────────────────────────────────────────────────────
 log "Starting local MySQL container …"
-docker-compose -f "${SCRIPT_DIR}/docker-compose.yml" up -d mysql_local
+${COMPOSE} -f "${SCRIPT_DIR}/docker-compose.yml" up -d mysql_local
 
 log "Waiting for MySQL to be ready …"
 RETRIES=30
@@ -40,7 +60,7 @@ until docker exec mysql_local \
     mysqladmin ping -uroot -p"${MYSQL_ROOT_PASSWORD}" --silent 2>/dev/null; do
   RETRIES=$((RETRIES - 1))
   if [[ $RETRIES -eq 0 ]]; then
-    log "[ERROR] MySQL did not become ready. Check: docker-compose logs mysql_local"
+    log "[ERROR] MySQL did not become ready. Check: ${COMPOSE} logs mysql_local"
     exit 1
   fi
   sleep 2
@@ -61,19 +81,19 @@ log "Root user set to mysql_native_password."
 # ── 3. Create MySQL users from MYSQL_USERS_JSON ───────────────────────────────
 log "Creating MySQL users …"
 
-if ! echo "${MYSQL_USERS_JSON}" | jq empty 2>/dev/null; then
+if ! echo "${MYSQL_USERS_JSON}" | ${JQ} empty 2>/dev/null; then
   log "[ERROR] MYSQL_USERS_JSON in .env is not valid JSON."
   exit 1
 fi
 
-USER_COUNT=$(echo "${MYSQL_USERS_JSON}" | jq 'length')
+USER_COUNT=$(echo "${MYSQL_USERS_JSON}" | ${JQ} 'length')
 log "Found ${USER_COUNT} user(s) to create."
 
 for i in $(seq 0 $((USER_COUNT - 1))); do
-  DB_USER=$(echo  "${MYSQL_USERS_JSON}" | jq -r ".[$i].user")
-  DB_PASS=$(echo  "${MYSQL_USERS_JSON}" | jq -r ".[$i].password")
-  DB_HOST=$(echo  "${MYSQL_USERS_JSON}" | jq -r ".[$i].host")
-  DB_PRIVS=$(echo "${MYSQL_USERS_JSON}" | jq -r ".[$i].privileges")
+  DB_USER=$(echo  "${MYSQL_USERS_JSON}" | ${JQ} -r ".[$i].user")
+  DB_PASS=$(echo  "${MYSQL_USERS_JSON}" | ${JQ} -r ".[$i].password")
+  DB_HOST=$(echo  "${MYSQL_USERS_JSON}" | ${JQ} -r ".[$i].host")
+  DB_PRIVS=$(echo "${MYSQL_USERS_JSON}" | ${JQ} -r ".[$i].privileges")
 
   log "  → '${DB_USER}'@'${DB_HOST}'  [${DB_PRIVS}]"
 
@@ -100,19 +120,26 @@ else
   CRON_EXPR="0 */${HOURS} * * *"
 fi
 
-CRON_LOG="${LOG_DIR:-/var/log/erp_sync}/cron.log"
+CRON_LOG="${LOG_DIR}/cron.log"
 mkdir -p "$(dirname "$CRON_LOG")"
 
 CRON_LINE="${CRON_EXPR} /usr/bin/env bash ${SYNC_SCRIPT} >> ${CRON_LOG} 2>&1"
 CRON_MARKER="# erp_database_sync"
 
-(
-  crontab -l 2>/dev/null | grep -v "$CRON_MARKER" || true
-  echo "${CRON_MARKER}"
-  echo "${CRON_LINE}"
-) | crontab -
-
-log "Cron registered: ${CRON_LINE}"
+if command -v crontab &>/dev/null; then
+  (
+    crontab -l 2>/dev/null | grep -v "$CRON_MARKER" || true
+    echo "${CRON_MARKER}"
+    echo "${CRON_LINE}"
+  ) | crontab -
+  log "Cron registered: ${CRON_LINE}"
+else
+  log "crontab not available (Windows detected)."
+  log "Add a Windows Task Scheduler entry to run every ${SYNC_INTERVAL_HOURS:-2} hours:"
+  log "  Program : bash"
+  log "  Args    : ${SYNC_SCRIPT}"
+  log "  Or run manually: bash ${SYNC_SCRIPT}"
+fi
 
 # ── 5. First sync ─────────────────────────────────────────────────────────────
 log "Running initial sync …"
