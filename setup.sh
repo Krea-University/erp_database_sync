@@ -47,6 +47,17 @@ until docker exec mysql_local \
 done
 log "MySQL is ready."
 
+# ── 2b. Force root to mysql_native_password (required for SQLyog / old clients) ─
+log "Setting root authentication to mysql_native_password …"
+docker exec mysql_local mysql \
+  -uroot -p"${MYSQL_ROOT_PASSWORD}" \
+  -e "
+    ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '${MYSQL_ROOT_PASSWORD}';
+    ALTER USER 'root'@'%'         IDENTIFIED WITH mysql_native_password BY '${MYSQL_ROOT_PASSWORD}';
+    FLUSH PRIVILEGES;
+  " 2>/dev/null || true
+log "Root user set to mysql_native_password."
+
 # ── 3. Create MySQL users from MYSQL_USERS_JSON ───────────────────────────────
 log "Creating MySQL users …"
 

@@ -120,11 +120,26 @@ while IFS= read -r db; do
   log "  · ${db}"
 done <<< "$LOCAL_DBS"
 
-# ── Prune old backups (keep last 10) ─────────────────────────────────────────
-log "Pruning old backups (keeping last 10) …"
+# ── Prune old backups ────────────────────────────────────────────────────────
+# Strategy: delete by age first, then cap by count
+KEEP_DAYS="${BACKUP_KEEP_DAYS:-1}"
+KEEP_COUNT="${BACKUP_KEEP_COUNT:-3}"
+
+log "Pruning backups (keep last ${KEEP_DAYS}d / max ${KEEP_COUNT} files) …"
+
+BEFORE_SIZE=$(du -sh "${BACKUP_DIR}" 2>/dev/null | cut -f1)
+
+# 1. Delete files older than KEEP_DAYS
+find "${BACKUP_DIR}" -name "dump_all_*.sql.gz" -mtime "+${KEEP_DAYS}" -delete 2>/dev/null || true
+
+# 2. Of remaining files keep only the newest KEEP_COUNT
 ls -tp "${BACKUP_DIR}"/dump_all_*.sql.gz 2>/dev/null \
-  | tail -n +11 \
-  | xargs -r rm --
+  | tail -n "+$((KEEP_COUNT + 1))" \
+  | xargs -r rm -f --
+
+AFTER_SIZE=$(du -sh "${BACKUP_DIR}" 2>/dev/null | cut -f1)
+REMAINING=$(ls "${BACKUP_DIR}"/dump_all_*.sql.gz 2>/dev/null | wc -l | tr -d ' ')
+log "Backup dir: ${BEFORE_SIZE} → ${AFTER_SIZE}  (${REMAINING} file(s) kept)"
 
 log "========== Sync Finished =========="
 log "Log: ${LOG_FILE}"
