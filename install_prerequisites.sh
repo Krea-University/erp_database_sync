@@ -159,6 +159,45 @@ https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
   fi
 }
 
+# ── Python 3 + pip ───────────────────────────────────────────────────────────
+install_python() {
+  header "Python 3 + pip"
+  if is_installed python3 && is_installed pip3; then
+    success "python3 $(python3 --version 2>&1 | cut -d' ' -f2) + pip3 already installed."
+    return
+  fi
+  info "Installing python3 and pip3 …"
+  case "$OS" in
+    debian) $SUDO apt-get install -y python3 python3-pip ;;
+    rhel)   $SUDO yum install -y python3 python3-pip 2>/dev/null \
+              || $SUDO dnf install -y python3 python3-pip ;;
+    macos)  brew install python3 ;;
+  esac
+  success "python3 $(python3 --version 2>&1 | cut -d' ' -f2) installed."
+}
+
+# ── Flask (web dashboard) ─────────────────────────────────────────────────────
+install_flask() {
+  header "Flask (web dashboard)"
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  REQ_FILE="${SCRIPT_DIR}/requirements.txt"
+
+  if python3 -c "import flask" &>/dev/null 2>&1; then
+    FLASK_VER=$(python3 -c "import flask; print(flask.__version__)" 2>/dev/null)
+    success "Flask ${FLASK_VER} already installed."
+    return
+  fi
+
+  info "Installing Flask …"
+  if [[ -f "$REQ_FILE" ]]; then
+    pip3 install -r "$REQ_FILE"
+  else
+    pip3 install "flask>=2.3,<4"
+  fi
+  FLASK_VER=$(python3 -c "import flask; print(flask.__version__)" 2>/dev/null)
+  success "Flask ${FLASK_VER} installed."
+}
+
 # ── Docker Compose ────────────────────────────────────────────────────────────
 install_docker_compose() {
   header "Docker Compose"
@@ -238,6 +277,8 @@ fi
 
 install_jq
 install_mysql_client
+install_python
+install_flask
 install_docker
 install_docker_compose
 
@@ -254,10 +295,21 @@ check() {
   fi
 }
 
-check "jq"           jq
-check "mysqldump"    mysqldump
-check "docker"       docker
+check "jq"                              jq
+check "mysqldump"                       mysqldump
+check "python3"                         python3
+check "pip3"                            pip3
+check "docker"                          docker
 check "docker-compose / docker compose" docker-compose
 
+if python3 -c "import flask" &>/dev/null 2>&1; then
+  FLASK_VER=$(python3 -c "import flask; print(flask.__version__)" 2>/dev/null)
+  echo -e "  ${GREEN}✔${RESET}  Flask ${FLASK_VER}"
+else
+  echo -e "  ${RED}✘${RESET}  Flask  (not installed)"
+fi
+
 echo ""
-info "Next step:  ./setup.sh"
+info "Next steps:"
+info "  1. ./setup.sh          ← bootstrap MySQL + cron"
+info "  2. python3 api.py      ← start web dashboard on :8080"

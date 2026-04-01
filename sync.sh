@@ -34,6 +34,46 @@ DUMP_FILE="${BACKUP_DIR}/dump_all_${TIMESTAMP}.sql.gz"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE"; }
 
+# ── Prune function — always runs on EXIT (success or failure) ─────────────────
+prune_on_exit() {
+  local keep_days="${BACKUP_KEEP_DAYS:-1}"
+  local keep_count="${BACKUP_KEEP_COUNT:-3}"
+  local log_keep="${LOG_KEEP_COUNT:-14}"
+  local _log="${LOG_FILE:-/dev/stderr}"
+
+  # ── Prune backups ──────────────────────────────────────────────────────────
+  if [[ -n "${BACKUP_DIR:-}" && -d "$BACKUP_DIR" ]]; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Pruning backups (keep last ${keep_days}d / max ${keep_count} files) …" | tee -a "$_log"
+    local before; before=$(du -sh "${BACKUP_DIR}" 2>/dev/null | cut -f1)
+
+    # Age-based: delete files older than KEEP_DAYS days
+    find "${BACKUP_DIR}" -name "dump_all_*.sql.gz" -mtime "+${keep_days}" -delete 2>/dev/null || true
+
+    # Count-based: keep only the newest KEEP_COUNT files
+    local extras
+    extras=$(ls -t "${BACKUP_DIR}"/dump_all_*.sql.gz 2>/dev/null | tail -n "+$((keep_count + 1))")
+    if [[ -n "$extras" ]]; then
+      echo "$extras" | xargs rm -f
+    fi
+
+    local after; after=$(du -sh "${BACKUP_DIR}" 2>/dev/null | cut -f1)
+    local remaining; remaining=$(ls "${BACKUP_DIR}"/dump_all_*.sql.gz 2>/dev/null | wc -l | tr -d ' ')
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Backup dir: ${before} → ${after}  (${remaining} file(s) kept)" | tee -a "$_log"
+  fi
+
+  # ── Prune logs: keep newest LOG_KEEP_COUNT sync logs ──────────────────────
+  if [[ -n "${LOG_DIR:-}" && -d "$LOG_DIR" ]]; then
+    local log_extras
+    log_extras=$(ls -t "${LOG_DIR}"/sync_*.log 2>/dev/null | tail -n "+$((log_keep + 1))")
+    if [[ -n "$log_extras" ]]; then
+      local log_count; log_count=$(echo "$log_extras" | wc -l | tr -d ' ')
+      echo "[$(date '+%Y-%m-%d %H:%M:%S')] Removing ${log_count} old log file(s)" | tee -a "$_log"
+      echo "$log_extras" | xargs rm -f
+    fi
+  fi
+}
+trap prune_on_exit EXIT
+
 log "========== ERP DB Sync Started (ALL databases) =========="
 log "Source : ${PROD_DB_USER}@${PROD_DB_HOST}:${PROD_DB_PORT}"
 log "Target : local Docker mysql_local"
@@ -41,7 +81,7 @@ log "Target : local Docker mysql_local"
 # ── Verify container is running ───────────────────────────────────────────────
 MYSQL_CONTAINER=$(docker ps --filter "name=mysql_local" --format "{{.Names}}" | head -1)
 if [[ -z "$MYSQL_CONTAINER" ]]; then
-  log "[ERROR] Container 'mysql_local' is not running. Run: docker-compose up -d"
+  log "[ERROR] Container 'mysql_local' is not running. Run: docker compose up -d"
   exit 1
 fi
 
@@ -50,7 +90,6 @@ log "Querying remote database list …"
 
 SYSTEM_DBS="^(information_schema|performance_schema|mysql|sys)$"
 
-# Run mysql client INSIDE the container → connects out to the remote prod server
 DB_LIST=$(docker exec "$MYSQL_CONTAINER" \
   mysql \
   --host="${PROD_DB_HOST}" \
@@ -80,7 +119,6 @@ log "Dumping ${DB_COUNT} database(s) …"
 
 DB_ARGS=$(echo "$DB_LIST" | tr '\n' ' ')
 
-# Run mysqldump INSIDE the container, stream output through gzip on the host
 # shellcheck disable=SC2086
 docker exec "$MYSQL_CONTAINER" \
   mysqldump \
@@ -105,7 +143,6 @@ log "Dump complete → ${DUMP_FILE} (${DUMP_SIZE})"
 # ── Restore into local MySQL container ───────────────────────────────────────
 log "Restoring all databases into '${MYSQL_CONTAINER}' …"
 
-# Pipe decompressed dump directly into local mysql
 gunzip < "$DUMP_FILE" | docker exec -i "$MYSQL_CONTAINER" \
   mysql --force -uroot -p"${MYSQL_ROOT_PASSWORD}" >> "$LOG_FILE" 2>&1 || true
 
@@ -127,22 +164,6 @@ while IFS= read -r db; do
   log "  · ${db}"
 done <<< "$LOCAL_DBS"
 
-# ── Prune old backups ────────────────────────────────────────────────────────
-KEEP_DAYS="${BACKUP_KEEP_DAYS:-1}"
-KEEP_COUNT="${BACKUP_KEEP_COUNT:-3}"
-
-log "Pruning backups (keep last ${KEEP_DAYS}d / max ${KEEP_COUNT} files) …"
-BEFORE_SIZE=$(du -sh "${BACKUP_DIR}" 2>/dev/null | cut -f1)
-
-find "${BACKUP_DIR}" -name "dump_all_*.sql.gz" -mtime "+${KEEP_DAYS}" -delete 2>/dev/null || true
-
-ls -tp "${BACKUP_DIR}"/dump_all_*.sql.gz 2>/dev/null \
-  | tail -n "+$((KEEP_COUNT + 1))" \
-  | xargs -r rm -f --
-
-AFTER_SIZE=$(du -sh "${BACKUP_DIR}" 2>/dev/null | cut -f1)
-REMAINING=$(ls "${BACKUP_DIR}"/dump_all_*.sql.gz 2>/dev/null | wc -l | tr -d ' ')
-log "Backup dir: ${BEFORE_SIZE} → ${AFTER_SIZE}  (${REMAINING} file(s) kept)"
-
 log "========== Sync Finished =========="
 log "Log: ${LOG_FILE}"
+# prune_on_exit fires automatically via trap EXIT
