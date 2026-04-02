@@ -49,7 +49,7 @@ wait_ready() {
   info "Waiting for MariaDB to be ready …"
   local retries=30
   until docker exec "$CONTAINER_NAME" \
-      mysqladmin ping -uroot -p"${MYSQL_ROOT_PASSWORD}" --silent 2>/dev/null; do
+      mariadb-admin ping -uroot -p"${MYSQL_ROOT_PASSWORD}" --silent 2>/dev/null; do
     retries=$((retries - 1))
     if [[ $retries -eq 0 ]]; then
       err "MariaDB did not become ready. Check: docker logs ${CONTAINER_NAME}"
@@ -82,7 +82,7 @@ create_users() {
     db_host=$(echo  "${MYSQL_USERS_JSON}" | ${JQ} -r ".[$i].host")
     db_privs=$(echo "${MYSQL_USERS_JSON}" | ${JQ} -r ".[$i].privileges")
 
-    docker exec "$CONTAINER_NAME" mysql \
+    docker exec "$CONTAINER_NAME" mariadb \
       -uroot -p"${MYSQL_ROOT_PASSWORD}" \
       -e "
         CREATE USER IF NOT EXISTS '${db_user}'@'${db_host}'
@@ -131,7 +131,7 @@ cmd_start() {
 
   # Force root to use mysql_native_password (plain password — SQLyog / old client safe)
   info "Setting root authentication to mysql_native_password …"
-  docker exec "$CONTAINER_NAME" mysql \
+  docker exec "$CONTAINER_NAME" mariadb \
     -uroot -p"${MYSQL_ROOT_PASSWORD}" \
     -e "
       ALTER USER 'root'@'localhost' IDENTIFIED VIA mysql_native_password USING PASSWORD('${MYSQL_ROOT_PASSWORD}');
@@ -143,7 +143,7 @@ cmd_start() {
   create_users
 
   ok "MariaDB started on port ${MARIADB_PORT}"
-  ok "Connect: mysql -h 127.0.0.1 -P ${MARIADB_PORT} -uroot -p'${MYSQL_ROOT_PASSWORD}'"
+  ok "Connect: mariadb -h 127.0.0.1 -P ${MARIADB_PORT} -uroot -p'${MYSQL_ROOT_PASSWORD}'"
 }
 
 cmd_stop() {
