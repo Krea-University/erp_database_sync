@@ -127,8 +127,10 @@ CRON_LINE="${CRON_EXPR} /usr/bin/env bash ${SYNC_SCRIPT} >> ${CRON_LOG} 2>&1"
 CRON_MARKER="# erp_database_sync"
 
 if command -v crontab &>/dev/null; then
+  # Strip BOTH the marker comment AND any existing sync.sh cron line before re-adding,
+  # so re-running setup.sh never creates duplicate crontab entries.
   (
-    crontab -l 2>/dev/null | grep -v "$CRON_MARKER" || true
+    crontab -l 2>/dev/null | grep -Ev "${CRON_MARKER}|sync\.sh" || true
     echo "${CRON_MARKER}"
     echo "${CRON_LINE}"
   ) | crontab -
