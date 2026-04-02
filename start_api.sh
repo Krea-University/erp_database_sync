@@ -106,17 +106,37 @@ cmd_start() {
 
   # ── Use a venv so Flask is always found by the launched process ──────────────
   local VENV_DIR="${SCRIPT_DIR}/.venv"
+  local SUDO_CMD=""; [[ "$EUID" -ne 0 ]] && command -v sudo &>/dev/null && SUDO_CMD="sudo"
+
+  # Ensure python3-venv and pip are available (Ubuntu/Debian)
+  if command -v apt-get &>/dev/null; then
+    if ! python3 -m venv --help &>/dev/null 2>&1; then
+      info "Installing python3-venv …"
+      $SUDO_CMD apt-get install -y python3-venv python3-pip -q
+    fi
+  fi
 
   # Detect venv python (Linux: bin/python3 / Windows: Scripts/python)
-  local PYTHON_BIN=""
-  [[ -f "${VENV_DIR}/bin/python3"        ]] && PYTHON_BIN="${VENV_DIR}/bin/python3"
-  [[ -f "${VENV_DIR}/Scripts/python.exe" ]] && PYTHON_BIN="${VENV_DIR}/Scripts/python.exe"
+  venv_python() {
+    [[ -f "${VENV_DIR}/bin/python3"        ]] && echo "${VENV_DIR}/bin/python3"   && return
+    [[ -f "${VENV_DIR}/Scripts/python.exe" ]] && echo "${VENV_DIR}/Scripts/python.exe" && return
+  }
 
-  if [[ -z "$PYTHON_BIN" ]]; then
+  local PYTHON_BIN; PYTHON_BIN=$(venv_python)
+
+  # If venv missing OR pip broken inside it — rebuild
+  if [[ -z "$PYTHON_BIN" ]] || ! "$PYTHON_BIN" -m pip --version &>/dev/null 2>&1; then
     info "Creating Python virtual environment (.venv) …"
-    python3 -m venv "${VENV_DIR}"
-    [[ -f "${VENV_DIR}/bin/python3"        ]] && PYTHON_BIN="${VENV_DIR}/bin/python3"
-    [[ -f "${VENV_DIR}/Scripts/python.exe" ]] && PYTHON_BIN="${VENV_DIR}/Scripts/python.exe"
+    rm -rf "${VENV_DIR}"
+    python3 -m venv --upgrade-deps "${VENV_DIR}" 2>/dev/null \
+      || python3 -m venv "${VENV_DIR}"
+    PYTHON_BIN=$(venv_python)
+    # Bootstrap pip if still missing (ensurepip fallback)
+    if ! "$PYTHON_BIN" -m pip --version &>/dev/null 2>&1; then
+      info "Bootstrapping pip …"
+      "$PYTHON_BIN" -m ensurepip --upgrade 2>/dev/null || \
+        curl -fsSL https://bootstrap.pypa.io/get-pip.py | "$PYTHON_BIN"
+    fi
   fi
 
   if ! "$PYTHON_BIN" -c "import flask" &>/dev/null 2>&1; then
