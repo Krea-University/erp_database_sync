@@ -32,9 +32,10 @@ load_env() {
 
   if [[ -f "${SCRIPT_DIR}/.env" ]]; then
     while IFS= read -r line; do
-      [[ "$line" =~ ^[[:space:]]*# ]] && continue
-      [[ "$line" =~ ^API_PORT=([0-9]+)$ ]] && API_PORT="${BASH_REMATCH[1]}"
-      [[ "$line" =~ ^LOG_DIR=(.+)$      ]] && LOG_DIR="${BASH_REMATCH[1]//\'/}"
+      if   [[ "$line" =~ ^[[:space:]]*# ]];        then continue
+      elif [[ "$line" =~ ^API_PORT=([0-9]+)$ ]];   then API_PORT="${BASH_REMATCH[1]}"
+      elif [[ "$line" =~ ^LOG_DIR=(.+)$ ]];         then LOG_DIR="${BASH_REMATCH[1]//\'/}"
+      fi
     done < "${SCRIPT_DIR}/.env"
   fi
 }
@@ -60,7 +61,9 @@ enable_autostart() {
   load_env
   local UNIT="/etc/systemd/system/erp_api.service"
   local SUDO_CMD=""; [[ "$EUID" -ne 0 ]] && command -v sudo &>/dev/null && SUDO_CMD="sudo"
-  local PYTHON_BIN; PYTHON_BIN=$(command -v python3)
+  local VENV_DIR="${SCRIPT_DIR}/.venv"
+  local PYTHON_BIN="${VENV_DIR}/bin/python3"
+  [[ ! -f "$PYTHON_BIN" ]] && PYTHON_BIN=$(command -v python3)
 
   $SUDO_CMD bash -c "cat > ${UNIT}" <<EOF
 [Unit]
@@ -101,16 +104,37 @@ cmd_start() {
     exit 1
   fi
 
-  if ! python3 -c "import flask" &>/dev/null 2>&1; then
-    err "Flask not installed. Run: pip3 install -r ${SCRIPT_DIR}/requirements.txt"
-    exit 1
+  # ── Use a venv so Flask is always found by the launched process ──────────────
+  local VENV_DIR="${SCRIPT_DIR}/.venv"
+
+  # Detect venv python (Linux: bin/python3 / Windows: Scripts/python)
+  local PYTHON_BIN=""
+  [[ -f "${VENV_DIR}/bin/python3"        ]] && PYTHON_BIN="${VENV_DIR}/bin/python3"
+  [[ -f "${VENV_DIR}/Scripts/python.exe" ]] && PYTHON_BIN="${VENV_DIR}/Scripts/python.exe"
+
+  if [[ -z "$PYTHON_BIN" ]]; then
+    info "Creating Python virtual environment (.venv) …"
+    python3 -m venv "${VENV_DIR}"
+    [[ -f "${VENV_DIR}/bin/python3"        ]] && PYTHON_BIN="${VENV_DIR}/bin/python3"
+    [[ -f "${VENV_DIR}/Scripts/python.exe" ]] && PYTHON_BIN="${VENV_DIR}/Scripts/python.exe"
+  fi
+
+  if ! "$PYTHON_BIN" -c "import flask" &>/dev/null 2>&1; then
+    info "Installing Flask into .venv …"
+    local REQ="${SCRIPT_DIR}/requirements.txt"
+    if [[ -f "$REQ" ]]; then
+      "$PYTHON_BIN" -m pip install --quiet -r "$REQ"
+    else
+      "$PYTHON_BIN" -m pip install --quiet "flask>=2.3,<4"
+    fi
+    ok "Flask installed."
   fi
 
   mkdir -p "${LOG_DIR}"
   local API_LOG="${LOG_DIR}/api.log"
 
-  info "Starting dashboard (python3 api.py) …"
-  nohup python3 "${API_PY}" >> "${API_LOG}" 2>&1 &
+  info "Starting dashboard …"
+  PYTHONIOENCODING=utf-8 nohup "$PYTHON_BIN" "${API_PY}" >> "${API_LOG}" 2>&1 &
   local pid=$!
   echo "$pid" > "$PID_FILE"
 

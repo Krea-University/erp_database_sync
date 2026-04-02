@@ -57,16 +57,30 @@ def require_token(f):
 
 
 # ── Cron helpers ──────────────────────────────────────────────────────────────
+def _crontab_available():
+    import shutil
+    return shutil.which("crontab") is not None
+
+
 def _read_crontab():
-    r = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
-    return r.stdout if r.returncode == 0 else ""
+    if not _crontab_available():
+        return ""
+    try:
+        r = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
+        return r.stdout if r.returncode == 0 else ""
+    except Exception:
+        return ""
 
 
 def _write_crontab(content):
+    if not _crontab_available():
+        raise RuntimeError("crontab not available on this system")
     subprocess.run(["crontab", "-"], input=content, text=True, check=True)
 
 
 def _cron_info():
+    if not _crontab_available():
+        return False, None
     lines = _read_crontab().splitlines()
     for i, line in enumerate(lines):
         if CRON_MARKER in line:
@@ -802,8 +816,8 @@ def dashboard():
 
 if __name__ == "__main__":
     port = int(os.environ.get("API_PORT", 8080))
-    print(f"\n  ERP Sync Dashboard  →  http://0.0.0.0:{port}")
+    print(f"\n  ERP Sync Dashboard  ->  http://0.0.0.0:{port}")
     print(f"  Backup dir : {BACKUP_DIR}")
     print(f"  Log dir    : {LOG_DIR}")
-    print(f"  Auth token : {'SET' if API_TOKEN else 'NOT SET — add API_TOKEN to .env'}\n")
+    print(f"  Auth token : {'SET' if API_TOKEN else 'NOT SET - add API_TOKEN to .env'}\n")
     app.run(host="0.0.0.0", port=port, debug=False)
