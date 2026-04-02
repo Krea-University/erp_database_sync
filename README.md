@@ -4,6 +4,8 @@ Pulls **all remote MySQL production databases** directly into a local Docker MyS
 No Cloud SQL Proxy required — direct TCP connection.  
 Includes a **web dashboard** to monitor status, view logs, and control the cron job from a browser.
 
+> **Authorized Access Only** — This system is restricted to authorized users of the Krea System. Unauthorized access is prohibited.
+
 ---
 
 ## How It Works
@@ -17,10 +19,10 @@ Remote MySQL (Cloud SQL / VPS)
            │
            ▼
  Local Docker MySQL  (:3306)
- Timezone: IST (+05:30)
- Auth: mysql_native_password
+ Timezone : IST (+05:30)
+ Auth     : mysql_native_password
            │
-    cron: every 2 h
+    cron   : every 2 h
            │
            ▼
  Web Dashboard  (:8080)
@@ -30,7 +32,7 @@ Remote MySQL (Cloud SQL / VPS)
 
 ## Prerequisites
 
-Run the installer — it handles Docker, jq, and mysql-client automatically:
+Run the installer — it handles Docker, jq, Python 3, Flask, and mysql-client automatically:
 
 ```bash
 chmod +x install_prerequisites.sh
@@ -41,7 +43,7 @@ chmod +x install_prerequisites.sh
 |---|---|
 | Docker & Docker Compose plugin | Ubuntu, Debian, CentOS, RHEL, Fedora, Amazon Linux, macOS |
 | `jq` | All of the above |
-| `python3` + `pip3` | Required for the web dashboard |
+| `python3` + `pip3` + `Flask` | All of the above |
 
 ---
 
@@ -49,18 +51,19 @@ chmod +x install_prerequisites.sh
 
 ```
 erp_database_sync/
-├── .env                    ← your local config (never commit)
-├── .env.example            ← template — copy this to .env
-├── docker-compose.yml      ← local MySQL service
+├── .env                      ← your local config (never commit)
+├── .env.example              ← template — copy this to .env
+├── docker-compose.yml        ← local MySQL service
 ├── mysql/
-│   └── my.cnf              ← MySQL settings (timezone, sql_mode, etc.)
-├── setup.sh                ← one-time bootstrap
-├── sync.sh                 ← sync script (called by cron)
-├── api.py                  ← web dashboard + REST API
-├── requirements.txt        ← Python deps (Flask)
-├── deploy_ubuntu.sh        ← Ubuntu server deploy helper
-├── install_prerequisites.sh
-├── init/                   ← (optional) .sql files run on first MySQL start
+│   └── my.cnf                ← MySQL settings (timezone, sql_mode, etc.)
+├── setup.sh                  ← one-time bootstrap (MySQL + cron)
+├── sync.sh                   ← sync script (called by cron)
+├── api.py                    ← web dashboard + REST API
+├── start_api.sh              ← manage the dashboard process
+├── requirements.txt          ← Python deps (Flask)
+├── install_prerequisites.sh  ← install all tools
+├── deploy_ubuntu.sh          ← Ubuntu server deploy helper
+├── init/                     ← (optional) .sql files run on first MySQL start
 └── README.md
 ```
 
@@ -71,17 +74,17 @@ erp_database_sync/
 ```bash
 # 1. Copy and configure .env
 cp .env.example .env
-nano .env          # fill in PROD_DB_*, MYSQL_ROOT_PASSWORD, API_TOKEN
+nano .env           # set PROD_DB_*, MYSQL_ROOT_PASSWORD, API_TOKEN
 
 # 2. Make scripts executable
-chmod +x setup.sh sync.sh
+chmod +x setup.sh sync.sh start_api.sh
 
 # 3. Run one-time setup (starts MySQL, creates users, registers cron, first sync)
 ./setup.sh
 
 # 4. Start the web dashboard
-pip3 install -r requirements.txt
-python3 api.py     # → http://<server-ip>:8080
+./start_api.sh start
+# → http://<server-ip>:8080
 ```
 
 ---
@@ -137,13 +140,13 @@ cp .env.example .env
 | `BACKUP_KEEP_COUNT` | `3` | Always keep at least N most recent dumps |
 | `LOG_KEEP_COUNT` | `14` | Keep N most recent log files |
 
-> Pruning runs automatically on every sync exit — even if the sync fails.
+> Pruning runs automatically on every sync exit — even if the sync fails mid-way.
 
 ### Web Dashboard
 
 | Variable | Default | Description |
 |---|---|---|
-| `API_TOKEN` | — | Secret token shown on the login page |
+| `API_TOKEN` | — | Secret token required to log in to the dashboard |
 | `API_PORT` | `8080` | Port the dashboard listens on |
 
 ### MySQL Users JSON
@@ -175,52 +178,59 @@ The local MySQL container is pre-configured with:
 | `sql-mode` | `STRICT_TRANS_TABLES,...` | `ONLY_FULL_GROUP_BY` removed — fixes GROUP BY errors |
 | `log-bin-trust-function-creators` | `1` | Allows stored functions with binary log enabled |
 | `group-concat-max-len` | `4294967295` | Maximum GROUP_CONCAT length |
-| `max-execution-time` | `60000` | Query timeout 60 seconds |
+| `max-execution-time` | `60000` | Query timeout — 60 seconds |
 
 ---
 
 ## Web Dashboard
 
-Start the dashboard:
+### Starting & Managing (`start_api.sh`)
 
 ```bash
-pip3 install -r requirements.txt
-python3 api.py
+chmod +x start_api.sh
+
+./start_api.sh start    # start in background (saves PID, writes log)
+./start_api.sh stop     # stop the running process
+./start_api.sh restart  # stop + start
+./start_api.sh status   # show running state + URL
+./start_api.sh logs     # tail -f the API log
 ```
 
-Open `http://<server-ip>:8080` in a browser and enter your `API_TOKEN`.
+The script:
+- Verifies `python3` and `Flask` are installed (auto-installs Flask if missing)
+- Runs `api.py` via `nohup` in the background
+- Saves the PID to `.api.pid` for stop/restart/status
+- Writes output to `$LOG_DIR/api.log`
+
+Open `http://<server-ip>:8080` in a browser and enter your `API_TOKEN` to connect.
 
 ### Dashboard Features
 
 | Feature | Description |
 |---|---|
-| Status cards | Cron state, last sync time, backup count/size, log count |
-| Enable / Disable Cron | Toggle the sync cron job on or off |
-| Sync Now | Trigger a manual sync immediately |
-| Log Reports | Browse and view the last 500 lines of any sync log |
-| Auto-refresh | Status refreshes every 30 seconds |
+| Metric cards | Cron state, last sync time (IST), backup count/size, log count |
+| Enable / Disable Cron | Toggle the sync cron job on or off with one click |
+| Sync Now | Trigger a manual sync immediately in the background |
+| Log Reports | Split-panel log browser — file list + numbered, colour-coded viewer |
+| Auto-refresh | Status updates every 30 seconds automatically |
+| Connection indicator | Pulsing dot shows token connection state |
 
 ### REST API Endpoints
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| `GET` | `/` | — | Web dashboard |
-| `GET` | `/api/status` | — | JSON status (cron, last sync, backup stats) |
+| `GET` | `/` | — | Web dashboard UI |
+| `GET` | `/api/status` | — | JSON: cron state, last sync, backup stats |
 | `POST` | `/api/cron/enable` | `X-API-Token` | Re-enable cron job |
 | `POST` | `/api/cron/disable` | `X-API-Token` | Disable cron job |
-| `POST` | `/api/sync/trigger` | `X-API-Token` | Run sync in background now |
+| `POST` | `/api/sync/trigger` | `X-API-Token` | Run sync in background immediately |
 | `GET` | `/api/logs` | `X-API-Token` | List recent log files |
-| `GET` | `/api/logs/<name>` | `X-API-Token` | View log file content |
+| `GET` | `/api/logs/<name>` | `X-API-Token` | View log file content (last 500 lines) |
 
-Send the token as a header:
 ```bash
+# Example — disable cron via curl
 curl -X POST http://10.10.3.44:8080/api/cron/disable \
      -H "X-API-Token: ERP@Sync#2026!"
-```
-
-Run as a background service:
-```bash
-nohup python3 api.py >> /var/erp_sync/logs/api.log 2>&1 &
 ```
 
 ---
@@ -231,7 +241,7 @@ nohup python3 api.py >> /var/erp_sync/logs/api.log 2>&1 &
 # Start MySQL
 docker compose up -d
 
-# View logs
+# View container logs
 docker compose logs -f mysql_local
 
 # Stop
@@ -241,7 +251,7 @@ docker compose down
 docker compose down -v
 ```
 
-Connect directly:
+Connect directly to local MySQL:
 ```bash
 mysql -h 127.0.0.1 -P 3306 -u root -p
 ```
@@ -257,15 +267,15 @@ chmod +x deploy_ubuntu.sh
 ./deploy_ubuntu.sh
 ```
 
-To allow external connections, make sure port `3306` (MySQL) and `8080` (dashboard) are open:
+Open firewall ports for MySQL and the dashboard:
 
 ```bash
 ufw allow 3306/tcp
 ufw allow 8080/tcp
 ```
 
-> If running inside Proxmox, also add inbound TCP rules in:  
-> **Proxmox Web UI → VM → Firewall → Add rule → Direction: in, Protocol: tcp, Port: 3306 / 8080**
+> **Proxmox VM:** Also add inbound TCP rules in the Proxmox Web UI:  
+> **VM → Firewall → Add rule → Direction: in, Protocol: tcp, Dest. port: 3306 / 8080**
 
 ---
 
@@ -273,13 +283,14 @@ ufw allow 8080/tcp
 
 | Path | Contents |
 |---|---|
-| `$LOG_DIR/sync_YYYYMMDD_HHMMSS.log` | Per-sync log |
+| `$LOG_DIR/sync_YYYYMMDD_HHMMSS.log` | Per cron-sync log |
 | `$LOG_DIR/manual_sync_YYYYMMDD_HHMMSS.log` | Logs from dashboard-triggered syncs |
-| `$BACKUP_DIR/dump_all_YYYYMMDD_HHMMSS.sql.gz` | Compressed full dump |
+| `$LOG_DIR/api.log` | Web dashboard process log |
+| `$BACKUP_DIR/dump_all_YYYYMMDD_HHMMSS.sql.gz` | Compressed full database dump |
 
 ```bash
-# Live log
-tail -f /var/erp_sync/logs/sync_*.log | tail -1
+# Tail the latest sync log
+./start_api.sh logs
 
 # List backups with sizes
 ls -lh /var/erp_sync/backups/
@@ -299,24 +310,31 @@ gunzip < /var/erp_sync/backups/dump_all_20260324_120000.sql.gz \
 | `Can't connect to MySQL server` | `telnet $PROD_DB_HOST $PROD_DB_PORT` — verify firewall |
 | `mysql_local not running` | `docker compose up -d` |
 | `MySQL did not become ready` | `docker compose logs mysql_local` — check root password |
-| Cron not running | `crontab -l` — verify entry; check log files |
+| Cron not running | `crontab -l` — verify entry; check `$LOG_DIR` |
 | Port 3306 unreachable from other hosts | Check Proxmox firewall → add inbound TCP 3306 rule |
 | `ERROR 2058: caching_sha2_password` | Ensure `mysql/my.cnf` is mounted and container restarted |
-| Old backups not deleted | Verify `BACKUP_KEEP_DAYS` and `BACKUP_KEEP_COUNT` in `.env`; check logs for prune output |
+| Old backups not deleted | Check `BACKUP_KEEP_DAYS`/`BACKUP_KEEP_COUNT` in `.env`; look for prune lines in sync log |
 | Dashboard shows "Unauthorized" | Token in browser must match `API_TOKEN` in `.env` |
-| `jq: command not found` | `sudo apt install jq` or `pip3 install jq` |
+| Dashboard not reachable | Run `./start_api.sh status`; check `./start_api.sh logs` |
+| `jq: command not found` | `sudo apt install jq` or run `./install_prerequisites.sh` |
+| Flask not found | `pip3 install -r requirements.txt` or run `./install_prerequisites.sh` |
 
 ---
 
 ## Security Notes
 
-- **Never commit** `.env` — it is in `.gitignore`
+- **Never commit** `.env` — it is listed in `.gitignore`
 - Restrict file permissions: `chmod 600 .env`
-- Change `API_TOKEN` from the default to something strong
-- Dashboard runs on `0.0.0.0` — restrict with a reverse proxy (nginx) if exposing externally
-- `mysqldump` does not expose passwords in process lists (`--password=` flag is used inside Docker)
+- Change `API_TOKEN` from the default to a strong, unique value
+- Dashboard binds to `0.0.0.0` — consider a reverse proxy (nginx) if exposing publicly
+- `mysqldump` credentials are passed inside the Docker container, not exposed in host process lists
 
 ```bash
 echo ".env"     >> .gitignore
 echo "*.sql.gz" >> .gitignore
 ```
+
+---
+
+*© 2026 Krea IT. All rights reserved.*  
+*Authorized Access Only — This system is restricted to authorized users of the Krea System. Unauthorized access is prohibited.*
