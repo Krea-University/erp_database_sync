@@ -218,7 +218,7 @@ step "9 / 11  Running initial database sync"
 bash "$SYNC_SCRIPT"
 
 # ── 10. Start web dashboard ───────────────────────────────────────────────────
-step "10 / 11  Starting web dashboard (Docker)"
+step "10 / 11  Starting web dashboard"
 
 START_API="${SCRIPT_DIR}/start_api.sh"
 if [[ -f "$START_API" ]]; then
