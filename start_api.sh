@@ -103,13 +103,18 @@ cmd_start() {
     docker rm -f "${CONTAINER_NAME}"
   fi
 
-  # Ensure log + backup dirs exist on host before mounting
+  # Ensure host directories exist before bind-mounting
   mkdir -p "${LOG_DIR}" "${BACKUP_DIR}"
+  # crontab dir may not exist on fresh Ubuntu installs
+  local SUDO_CMD=""; [[ "$EUID" -ne 0 ]] && command -v sudo &>/dev/null && SUDO_CMD="sudo"
+  $SUDO_CMD mkdir -p /var/spool/cron/crontabs 2>/dev/null || \
+    warn "/var/spool/cron/crontabs not writable — cron control from dashboard will be limited."
 
   info "Starting dashboard container …"
   docker run -d \
     --name "${CONTAINER_NAME}" \
     --restart unless-stopped \
+    --add-host=host.docker.internal:host-gateway \
     -p "0.0.0.0:${API_PORT}:8080" \
     -v "${SCRIPT_DIR}/.env:/app/.env:ro" \
     -v "${SCRIPT_DIR}/sync.sh:/app/sync.sh:ro" \
@@ -119,15 +124,25 @@ cmd_start() {
     -v "/var/run/docker.sock:/var/run/docker.sock" \
     "${IMAGE_NAME}"
 
-  # Give Flask a moment to bind the port
-  sleep 2
+  # Wait for Flask to be ready (up to 20 s)
+  info "Waiting for dashboard to be ready …"
+  local ready=0
+  for i in $(seq 1 20); do
+    if docker ps --filter "name=^${CONTAINER_NAME}$" \
+                 --filter "status=running" \
+                 --format "{{.Names}}" | grep -q "^${CONTAINER_NAME}$"; then
+      ready=1
+      break
+    fi
+    sleep 1
+  done
 
-  if docker ps --filter "name=^${CONTAINER_NAME}$" --format "{{.Names}}" | grep -q "^${CONTAINER_NAME}$"; then
+  if [[ $ready -eq 1 ]]; then
     ok "Dashboard running  →  http://$(server_ip):${API_PORT}"
     enable_autostart
   else
-    err "Container failed to start. Check logs:"
-    err "  docker logs ${CONTAINER_NAME}"
+    err "Container failed to start. Logs:"
+    docker logs "${CONTAINER_NAME}" 2>&1 | tail -30 >&2
     exit 1
   fi
 }
