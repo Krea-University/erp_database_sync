@@ -147,12 +147,30 @@ fi
 log "Running initial sync …"
 bash "$SYNC_SCRIPT"
 
+# ── 6. Start web dashboard ────────────────────────────────────────────────────
+START_API="${SCRIPT_DIR}/start_api.sh"
+
+if [[ -f "$START_API" ]]; then
+  chmod +x "$START_API"
+  log "Starting web dashboard …"
+  bash "$START_API" restart   # restart = stop any old instance + start fresh
+else
+  log "[WARN] start_api.sh not found — skipping dashboard start."
+  log "       Start manually: python3 ${SCRIPT_DIR}/api.py"
+fi
+
+# ── Summary ───────────────────────────────────────────────────────────────────
+SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "localhost")
+
 log ""
 log "╔══════════════════════════════════════════════════════╗"
-log "║            Setup Complete                            ║"
+log "║        Krea Onererp — Setup Complete                 ║"
 log "╠══════════════════════════════════════════════════════╣"
-log "║  Local MySQL  : localhost:${MYSQL_LOCAL_PORT:-3306}                  ║"
-log "║  Databases    : ALL (system DBs excluded)            ║"
-log "║  Sync cron    : ${CRON_EXPR}                    ║"
-log "║  Logs         : ${LOG_DIR:-/var/log/erp_sync}                ║"
+log "║  Local MySQL   : ${SERVER_IP}:${MYSQL_LOCAL_PORT:-3306}"
+log "║  Databases     : ALL (system DBs excluded)"
+log "║  Sync schedule : ${CRON_EXPR}"
+log "║  Logs          : ${LOG_DIR:-/var/erp_sync/logs}"
+log "║  Dashboard     : http://${SERVER_IP}:${API_PORT:-8080}"
 log "╚══════════════════════════════════════════════════════╝"
+log ""
+log "  Open the dashboard and enter your API_TOKEN to connect."
