@@ -76,38 +76,78 @@ create_users() {
   info "Creating ${count} user(s) in MariaDB …"
 
   for i in $(seq 0 $((count - 1))); do
-    local db_user db_pass db_host db_privs
+    local db_user db_pass db_privs
     db_user=$(echo  "${MYSQL_USERS_JSON}" | ${JQ} -r ".[$i].user")
     db_pass=$(echo  "${MYSQL_USERS_JSON}" | ${JQ} -r ".[$i].password")
-    db_host=$(echo  "${MYSQL_USERS_JSON}" | ${JQ} -r ".[$i].host")
     db_privs=$(echo "${MYSQL_USERS_JSON}" | ${JQ} -r ".[$i].privileges")
 
+    # Always use '%' — allow connections from any host
     docker exec "$CONTAINER_NAME" mariadb \
       -uroot -p"${MYSQL_ROOT_PASSWORD}" \
       -e "
-        CREATE USER IF NOT EXISTS '${db_user}'@'${db_host}'
+        CREATE USER IF NOT EXISTS '${db_user}'@'%'
           IDENTIFIED VIA mysql_native_password USING PASSWORD('${db_pass}');
-        GRANT ${db_privs} ON *.* TO '${db_user}'@'${db_host}';
+        GRANT ${db_privs} ON *.* TO '${db_user}'@'%';
         FLUSH PRIVILEGES;
-      " 2>/dev/null && ok "  User '${db_user}'@'${db_host}' ready." || \
+      " 2>/dev/null && ok "  User '${db_user}'@'%' ready." || \
       warn "  Could not create user '${db_user}' (may already exist)."
   done
+}
+
+# ── Auto-start on boot ───────────────────────────────────────────────────────
+enable_autostart() {
+  # Layer 1: container policy (--restart unless-stopped) already set in docker run.
+  # Layer 2: ensure Docker itself starts on boot.
+  # Layer 3: systemd unit as belt-and-braces fallback.
+
+  if ! command -v systemctl &>/dev/null; then
+    warn "systemd not found — skipping autostart setup (non-Linux or WSL)."
+    return
+  fi
+
+  # Enable Docker on boot
+  systemctl enable docker --now 2>/dev/null || true
+  ok "Docker enabled on boot."
+
+  # Write a systemd service unit for the MariaDB container
+  local UNIT_FILE="/etc/systemd/system/${CONTAINER_NAME}.service"
+  local SUDO_CMD=""
+  [[ "$EUID" -ne 0 ]] && SUDO_CMD="sudo"
+
+  $SUDO_CMD bash -c "cat > ${UNIT_FILE}" <<EOF
+[Unit]
+Description=Krea Onererp — MariaDB Local (port ${MARIADB_PORT})
+Requires=docker.service
+After=docker.service network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/docker start ${CONTAINER_NAME}
+ExecStop=/usr/bin/docker stop  ${CONTAINER_NAME}
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  $SUDO_CMD systemctl daemon-reload
+  $SUDO_CMD systemctl enable "${CONTAINER_NAME}.service" 2>/dev/null
+  ok "Systemd service enabled: ${CONTAINER_NAME}.service"
+  ok "Auto-start configured — MariaDB will start on every boot."
 }
 
 # ── Commands ──────────────────────────────────────────────────────────────────
 cmd_start() {
   load_env
 
-  if docker ps --filter "name=^${CONTAINER_NAME}$" --format "{{.Names}}" | grep -q "^${CONTAINER_NAME}$"; then
-    warn "Container '${CONTAINER_NAME}' is already running."
-    info "Port : ${MARIADB_PORT}"
-    return
-  fi
-
-  # Remove stopped container with the same name if it exists
+  # Kill and remove any existing container (running or stopped)
   if docker ps -a --filter "name=^${CONTAINER_NAME}$" --format "{{.Names}}" | grep -q "^${CONTAINER_NAME}$"; then
-    info "Removing stopped container '${CONTAINER_NAME}' …"
-    docker rm "${CONTAINER_NAME}"
+    info "Removing existing container '${CONTAINER_NAME}' …"
+    docker rm -f "${CONTAINER_NAME}"
   fi
 
   info "Pulling image ${MARIADB_IMAGE} …"
@@ -141,6 +181,7 @@ cmd_start() {
   ok "Root set to mysql_native_password."
 
   create_users
+  enable_autostart
 
   ok "MariaDB started on port ${MARIADB_PORT}"
   ok "Connect: mariadb -h 127.0.0.1 -P ${MARIADB_PORT} -uroot -p'${MYSQL_ROOT_PASSWORD}'"

@@ -1,74 +1,114 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  setup.sh  –  Bootstrap local MySQL and sync schedule
-#    1. Start local MySQL via Docker Compose
-#    2. Create MySQL users from MYSQL_USERS_JSON in .env
-#    3. Register cron job for sync.sh every 2-3 hours
-#    4. Run first sync immediately
+#  setup.sh  –  Single entry-point: sets up EVERYTHING for Krea Onererp
+#
+#  Steps:
+#   1. Validate .env
+#   2. Install prerequisites  (Docker, Python, Flask, jq …)
+#   3. Make all scripts executable
+#   4. Start MySQL            (docker compose)
+#   5. Configure MySQL        (native_password + users)
+#   6. Register cron job      (duplicate-safe)
+#   7. Enable MySQL auto-start (systemd)
+#   8. Start MariaDB          (port 3307)
+#   9. Run first sync
+#  10. Start web dashboard    (Docker container)
+#  11. Summary
 # =============================================================================
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="${SCRIPT_DIR}/.env"
 
+# ── Colours ───────────────────────────────────────────────────────────────────
+GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[1;33m'
+CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'
+
+log()  { echo -e "${CYAN}[$(date '+%H:%M:%S')]${RESET} $*"; }
+ok()   { echo -e "${GREEN}[OK]${RESET}    $*"; }
+warn() { echo -e "${YELLOW}[WARN]${RESET}  $*"; }
+err()  { echo -e "${RED}[ERROR]${RESET} $*" >&2; }
+step() { echo -e "\n${BOLD}━━  $*  ━━${RESET}"; }
+
+# ── 1. Validate .env ──────────────────────────────────────────────────────────
+step "1 / 11  Validating .env"
+
 if [[ ! -f "$ENV_FILE" ]]; then
-  echo "[ERROR] .env not found. Copy .env.example → .env and fill it in."
+  err ".env not found. Copy .env.example → .env and fill it in."
+  err "  cp ${SCRIPT_DIR}/.env.example ${SCRIPT_DIR}/.env"
   exit 1
 fi
 # shellcheck disable=SC1090
 source "$ENV_FILE"
 
-log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
+for var in PROD_DB_HOST PROD_DB_USER PROD_DB_PASS MYSQL_ROOT_PASSWORD; do
+  if [[ -z "${!var:-}" ]]; then
+    err "\$$var is not set in .env"
+    exit 1
+  fi
+done
+ok ".env is valid."
 
-# ── 1. Dependency checks ──────────────────────────────────────────────────────
-log "Checking dependencies …"
-if ! command -v docker &>/dev/null; then
-  echo "[ERROR] 'docker' not found. Install Docker Desktop and try again."
-  exit 1
+# ── 2. Install prerequisites ──────────────────────────────────────────────────
+step "2 / 11  Installing prerequisites"
+
+PREREQ="${SCRIPT_DIR}/install_prerequisites.sh"
+if [[ -f "$PREREQ" ]]; then
+  chmod +x "$PREREQ"
+  bash "$PREREQ"
+else
+  warn "install_prerequisites.sh not found — checking tools manually …"
+  for tool in docker python3 pip3 jq; do
+    command -v "$tool" &>/dev/null \
+      && ok "${tool} found." \
+      || { err "${tool} not found. Run: ./install_prerequisites.sh"; exit 1; }
+  done
 fi
 
-# Detect docker compose (v2 plugin) vs docker-compose (v1 standalone)
+# ── 3. Make all scripts executable ───────────────────────────────────────────
+step "3 / 11  Setting script permissions"
+
+for f in setup.sh sync.sh start_api.sh start_mariadb.sh \
+          install_prerequisites.sh deploy_ubuntu.sh; do
+  [[ -f "${SCRIPT_DIR}/${f}" ]] && chmod +x "${SCRIPT_DIR}/${f}" && ok "chmod +x ${f}"
+done
+
+# ── Detect docker compose v2 / v1 ────────────────────────────────────────────
 if docker compose version &>/dev/null 2>&1; then
   COMPOSE="docker compose"
 elif command -v docker-compose &>/dev/null; then
   COMPOSE="docker-compose"
 else
-  echo "[ERROR] Neither 'docker compose' nor 'docker-compose' found."
-  echo "        Install Docker Desktop (includes compose plugin) or run:"
-  echo "        sudo apt install docker-compose-plugin"
+  err "Neither 'docker compose' nor 'docker-compose' found."
+  err "Run: sudo apt install docker-compose-plugin"
   exit 1
 fi
-log "Using compose command: ${COMPOSE}"
 
-# Detect jq — fall back to Docker image if not installed on host
+# Detect jq — fall back to Docker image if not on host
 if command -v jq &>/dev/null; then
   JQ="jq"
 else
-  log "jq not found on host — using Docker fallback (ghcr.io/jqlang/jq)"
   JQ="docker run --rm -i ghcr.io/jqlang/jq:latest"
 fi
 
-log "All dependencies OK."
+# ── 4. Start MySQL ────────────────────────────────────────────────────────────
+step "4 / 11  Starting MySQL (port ${MYSQL_LOCAL_PORT:-3306})"
 
-# ── 2. Start local MySQL ──────────────────────────────────────────────────────
-log "Starting local MySQL container …"
 ${COMPOSE} -f "${SCRIPT_DIR}/docker-compose.yml" up -d mysql_local
-
 log "Waiting for MySQL to be ready …"
 RETRIES=30
 until docker exec mysql_local \
     mysqladmin ping -uroot -p"${MYSQL_ROOT_PASSWORD}" --silent 2>/dev/null; do
   RETRIES=$((RETRIES - 1))
-  if [[ $RETRIES -eq 0 ]]; then
-    log "[ERROR] MySQL did not become ready. Check: ${COMPOSE} logs mysql_local"
-    exit 1
-  fi
+  [[ $RETRIES -eq 0 ]] && { err "MySQL did not become ready. Check: ${COMPOSE} logs mysql_local"; exit 1; }
   sleep 2
 done
-log "MySQL is ready."
+ok "MySQL is ready."
 
-# ── 2b. Force root to mysql_native_password (required for SQLyog / old clients) ─
-log "Setting root authentication to mysql_native_password …"
+# ── 5. Configure MySQL ────────────────────────────────────────────────────────
+step "5 / 11  Configuring MySQL users"
+
+log "Setting root to mysql_native_password …"
 docker exec mysql_local mysql \
   -uroot -p"${MYSQL_ROOT_PASSWORD}" \
   -e "
@@ -76,27 +116,20 @@ docker exec mysql_local mysql \
     ALTER USER 'root'@'%'         IDENTIFIED WITH mysql_native_password BY '${MYSQL_ROOT_PASSWORD}';
     FLUSH PRIVILEGES;
   " 2>/dev/null || true
-log "Root user set to mysql_native_password."
-
-# ── 3. Create MySQL users from MYSQL_USERS_JSON ───────────────────────────────
-log "Creating MySQL users …"
+ok "Root set to mysql_native_password."
 
 if ! echo "${MYSQL_USERS_JSON}" | ${JQ} empty 2>/dev/null; then
-  log "[ERROR] MYSQL_USERS_JSON in .env is not valid JSON."
+  err "MYSQL_USERS_JSON in .env is not valid JSON."
   exit 1
 fi
 
 USER_COUNT=$(echo "${MYSQL_USERS_JSON}" | ${JQ} 'length')
-log "Found ${USER_COUNT} user(s) to create."
-
+log "Creating ${USER_COUNT} user(s) …"
 for i in $(seq 0 $((USER_COUNT - 1))); do
   DB_USER=$(echo  "${MYSQL_USERS_JSON}" | ${JQ} -r ".[$i].user")
   DB_PASS=$(echo  "${MYSQL_USERS_JSON}" | ${JQ} -r ".[$i].password")
   DB_HOST=$(echo  "${MYSQL_USERS_JSON}" | ${JQ} -r ".[$i].host")
   DB_PRIVS=$(echo "${MYSQL_USERS_JSON}" | ${JQ} -r ".[$i].privileges")
-
-  log "  → '${DB_USER}'@'${DB_HOST}'  [${DB_PRIVS}]"
-
   docker exec mysql_local mysql \
     -uroot -p"${MYSQL_ROOT_PASSWORD}" \
     -e "
@@ -104,73 +137,112 @@ for i in $(seq 0 $((USER_COUNT - 1))); do
         IDENTIFIED WITH mysql_native_password BY '${DB_PASS}';
       GRANT ${DB_PRIVS} ON *.* TO '${DB_USER}'@'${DB_HOST}';
       FLUSH PRIVILEGES;
-    " 2>&1
+    " 2>/dev/null
+  ok "  User '${DB_USER}'@'${DB_HOST}'  [${DB_PRIVS}]"
 done
 
-log "Users created."
+# ── 6. Register cron job ──────────────────────────────────────────────────────
+step "6 / 11  Registering sync cron job"
 
-# ── 4. Register cron job ──────────────────────────────────────────────────────
 SYNC_SCRIPT="${SCRIPT_DIR}/sync.sh"
-chmod +x "$SYNC_SCRIPT"
-
 if [[ -n "${SYNC_CRON_OVERRIDE:-}" ]]; then
   CRON_EXPR="${SYNC_CRON_OVERRIDE}"
 else
-  HOURS="${SYNC_INTERVAL_HOURS:-2}"
-  CRON_EXPR="0 */${HOURS} * * *"
+  CRON_EXPR="0 */${SYNC_INTERVAL_HOURS:-2} * * *"
 fi
 
-CRON_LOG="${LOG_DIR}/cron.log"
+CRON_LOG="${LOG_DIR:-/var/erp_sync/logs}/cron.log"
 mkdir -p "$(dirname "$CRON_LOG")"
-
 CRON_LINE="${CRON_EXPR} /usr/bin/env bash ${SYNC_SCRIPT} >> ${CRON_LOG} 2>&1"
 CRON_MARKER="# erp_database_sync"
 
 if command -v crontab &>/dev/null; then
-  # Strip BOTH the marker comment AND any existing sync.sh cron line before re-adding,
-  # so re-running setup.sh never creates duplicate crontab entries.
   (
     crontab -l 2>/dev/null | grep -Ev "${CRON_MARKER}|sync\.sh" || true
     echo "${CRON_MARKER}"
     echo "${CRON_LINE}"
   ) | crontab -
-  log "Cron registered: ${CRON_LINE}"
+  ok "Cron registered: ${CRON_EXPR}"
 else
-  log "crontab not available (Windows detected)."
-  log "Add a Windows Task Scheduler entry to run every ${SYNC_INTERVAL_HOURS:-2} hours:"
-  log "  Program : bash"
-  log "  Args    : ${SYNC_SCRIPT}"
-  log "  Or run manually: bash ${SYNC_SCRIPT}"
+  warn "crontab not available. Add manually to Task Scheduler:"
+  warn "  bash ${SYNC_SCRIPT}"
 fi
 
-# ── 5. First sync ─────────────────────────────────────────────────────────────
-log "Running initial sync …"
+# ── 7. MySQL auto-start on boot ───────────────────────────────────────────────
+step "7 / 11  Enabling MySQL auto-start on boot"
+
+if command -v systemctl &>/dev/null; then
+  SUDO_CMD=""; [[ "$EUID" -ne 0 ]] && SUDO_CMD="sudo"
+  systemctl enable docker --now 2>/dev/null || true
+
+  $SUDO_CMD bash -c "cat > /etc/systemd/system/mysql_local.service" <<EOF
+[Unit]
+Description=Krea Onererp — MySQL Local (port ${MYSQL_LOCAL_PORT:-3306})
+Requires=docker.service
+After=docker.service network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/docker start mysql_local
+ExecStop=/usr/bin/docker stop  mysql_local
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  $SUDO_CMD systemctl daemon-reload
+  $SUDO_CMD systemctl enable mysql_local.service 2>/dev/null
+  ok "mysql_local.service enabled."
+else
+  warn "systemd not found — skipping MySQL auto-start."
+fi
+
+# ── 8. Start MariaDB ──────────────────────────────────────────────────────────
+step "8 / 11  Starting MariaDB (port 3307)"
+
+MARIADB_SCRIPT="${SCRIPT_DIR}/start_mariadb.sh"
+if [[ -f "$MARIADB_SCRIPT" ]]; then
+  bash "$MARIADB_SCRIPT" start
+else
+  warn "start_mariadb.sh not found — skipping MariaDB."
+fi
+
+# ── 9. First sync ─────────────────────────────────────────────────────────────
+step "9 / 11  Running initial database sync"
+
 bash "$SYNC_SCRIPT"
 
-# ── 6. Start web dashboard ────────────────────────────────────────────────────
-START_API="${SCRIPT_DIR}/start_api.sh"
+# ── 10. Start web dashboard ───────────────────────────────────────────────────
+step "10 / 11  Starting web dashboard (Docker)"
 
+START_API="${SCRIPT_DIR}/start_api.sh"
 if [[ -f "$START_API" ]]; then
-  chmod +x "$START_API"
-  log "Starting web dashboard …"
-  bash "$START_API" restart   # restart = stop any old instance + start fresh
+  bash "$START_API" restart
 else
-  log "[WARN] start_api.sh not found — skipping dashboard start."
-  log "       Start manually: python3 ${SCRIPT_DIR}/api.py"
+  warn "start_api.sh not found — skipping dashboard."
 fi
 
-# ── Summary ───────────────────────────────────────────────────────────────────
+# ── 11. Summary ───────────────────────────────────────────────────────────────
+step "11 / 11  Done"
+
 SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "localhost")
 
-log ""
-log "╔══════════════════════════════════════════════════════╗"
-log "║        Krea Onererp — Setup Complete                 ║"
-log "╠══════════════════════════════════════════════════════╣"
-log "║  Local MySQL   : ${SERVER_IP}:${MYSQL_LOCAL_PORT:-3306}"
-log "║  Databases     : ALL (system DBs excluded)"
-log "║  Sync schedule : ${CRON_EXPR}"
-log "║  Logs          : ${LOG_DIR:-/var/erp_sync/logs}"
-log "║  Dashboard     : http://${SERVER_IP}:${API_PORT:-8080}"
-log "╚══════════════════════════════════════════════════════╝"
-log ""
-log "  Open the dashboard and enter your API_TOKEN to connect."
+echo ""
+echo -e "${BOLD}"
+echo    "╔══════════════════════════════════════════════════════════╗"
+echo    "║          Krea Onererp — Setup Complete                   ║"
+echo    "╠══════════════════════════════════════════════════════════╣"
+echo -e "║  MySQL        : ${CYAN}${SERVER_IP}:${MYSQL_LOCAL_PORT:-3306}${RESET}"
+echo -e "║  MariaDB      : ${CYAN}${SERVER_IP}:3307${RESET}"
+echo -e "║  Sync cron    : ${CRON_EXPR}"
+echo -e "║  Logs         : ${LOG_DIR:-/var/erp_sync/logs}"
+echo -e "║  Dashboard    : ${CYAN}http://${SERVER_IP}:${API_PORT:-8080}${RESET}"
+echo    "╚══════════════════════════════════════════════════════════╝"
+echo -e "${RESET}"
+echo    "  Open the dashboard and enter your API_TOKEN to connect."
+echo    ""

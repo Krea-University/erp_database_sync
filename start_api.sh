@@ -1,20 +1,21 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  start_api.sh  –  Manage the ERP Sync web dashboard (api.py)
+#  start_api.sh  –  Manage the ERP Sync web dashboard (Docker container)
 #
 #  Usage:
-#    ./start_api.sh              ← start (default)
+#    ./start_api.sh              ← build + start (default)
 #    ./start_api.sh start
 #    ./start_api.sh stop
 #    ./start_api.sh restart
 #    ./start_api.sh status
-#    ./start_api.sh logs         ← tail -f the API log
+#    ./start_api.sh logs         ← docker logs -f
+#    ./start_api.sh build        ← rebuild image only
 # =============================================================================
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-API_SCRIPT="${SCRIPT_DIR}/api.py"
-PID_FILE="${SCRIPT_DIR}/.api.pid"
+CONTAINER_NAME="erp_api"
+IMAGE_NAME="erp_api"
 
 # ── Colours ───────────────────────────────────────────────────────────────────
 GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[1;33m'
@@ -25,15 +26,18 @@ info() { echo -e "${CYAN}[INFO]${RESET}  $*"; }
 warn() { echo -e "${YELLOW}[WARN]${RESET}  $*"; }
 err()  { echo -e "${RED}[ERROR]${RESET} $*" >&2; }
 
-# ── Load .env (only safe simple vars) ────────────────────────────────────────
+# ── Load vars from .env ───────────────────────────────────────────────────────
 load_env() {
   API_PORT=8080
   LOG_DIR="${SCRIPT_DIR}/logs"
+  BACKUP_DIR="${SCRIPT_DIR}/backups"
+
   if [[ -f "${SCRIPT_DIR}/.env" ]]; then
     while IFS= read -r line; do
       [[ "$line" =~ ^[[:space:]]*# ]] && continue
-      [[ "$line" =~ ^API_PORT=([0-9]+)$ ]]  && API_PORT="${BASH_REMATCH[1]}"
-      [[ "$line" =~ ^LOG_DIR=(.+)$ ]]       && LOG_DIR="${BASH_REMATCH[1]//\'/}"
+      [[ "$line" =~ ^API_PORT=([0-9]+)$     ]] && API_PORT="${BASH_REMATCH[1]}"
+      [[ "$line" =~ ^LOG_DIR=(.+)$          ]] && LOG_DIR="${BASH_REMATCH[1]//\'/}"
+      [[ "$line" =~ ^BACKUP_DIR=(.+)$       ]] && BACKUP_DIR="${BASH_REMATCH[1]//\'/}"
     done < "${SCRIPT_DIR}/.env"
   fi
 }
@@ -43,96 +47,115 @@ server_ip() {
   hostname -I 2>/dev/null | awk '{print $1}' || echo "localhost"
 }
 
-# ── Check dependencies ────────────────────────────────────────────────────────
-check_deps() {
-  if ! command -v python3 &>/dev/null; then
-    err "python3 not found. Run: ./install_prerequisites.sh"
-    exit 1
-  fi
-  if ! python3 -c "import flask" &>/dev/null 2>&1; then
-    info "Flask not installed — installing from requirements.txt …"
-    pip3 install -r "${SCRIPT_DIR}/requirements.txt"
-  fi
-}
-
-# ── Get PID of running process (empty if not running) ─────────────────────────
-running_pid() {
-  if [[ -f "$PID_FILE" ]]; then
-    local pid; pid=$(cat "$PID_FILE")
-    if kill -0 "$pid" 2>/dev/null; then
-      echo "$pid"
-      return
-    fi
-    rm -f "$PID_FILE"   # stale pid file
-  fi
-  echo ""
-}
-
-# ── Commands ──────────────────────────────────────────────────────────────────
-cmd_start() {
-  load_env
-  local pid; pid=$(running_pid)
-
-  if [[ -n "$pid" ]]; then
-    warn "Dashboard is already running (PID ${pid})"
-    info "URL  : http://$(server_ip):${API_PORT}"
+# ── Auto-start on boot (systemd) ─────────────────────────────────────────────
+enable_autostart() {
+  if ! command -v systemctl &>/dev/null; then
+    warn "systemd not found — skipping autostart setup."
     return
   fi
 
-  check_deps
+  systemctl enable docker --now 2>/dev/null || true
 
-  if [[ ! -f "$API_SCRIPT" ]]; then
-    err "api.py not found at: ${API_SCRIPT}"
-    exit 1
+  local UNIT="/etc/systemd/system/${CONTAINER_NAME}.service"
+  local SUDO_CMD=""; [[ "$EUID" -ne 0 ]] && SUDO_CMD="sudo"
+
+  $SUDO_CMD bash -c "cat > ${UNIT}" <<EOF
+[Unit]
+Description=Krea Onererp — ERP Sync Dashboard
+Requires=docker.service
+After=docker.service network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/docker start ${CONTAINER_NAME}
+ExecStop=/usr/bin/docker stop  ${CONTAINER_NAME}
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  $SUDO_CMD systemctl daemon-reload
+  $SUDO_CMD systemctl enable "${CONTAINER_NAME}.service" 2>/dev/null
+  ok "Systemd service enabled: ${CONTAINER_NAME}.service"
+  ok "Dashboard will auto-start on every boot."
+}
+
+# ── Commands ──────────────────────────────────────────────────────────────────
+cmd_build() {
+  info "Building Docker image '${IMAGE_NAME}' …"
+  docker build -t "${IMAGE_NAME}" "${SCRIPT_DIR}"
+  ok "Image '${IMAGE_NAME}' built."
+}
+
+cmd_start() {
+  load_env
+
+  cmd_build
+
+  # Remove any existing container (running or stopped)
+  if docker ps -a --filter "name=^${CONTAINER_NAME}$" --format "{{.Names}}" | grep -q "^${CONTAINER_NAME}$"; then
+    info "Removing existing container '${CONTAINER_NAME}' …"
+    docker rm -f "${CONTAINER_NAME}"
   fi
 
-  mkdir -p "$LOG_DIR"
-  local api_log="${LOG_DIR}/api.log"
+  # Ensure log + backup dirs exist on host before mounting
+  mkdir -p "${LOG_DIR}" "${BACKUP_DIR}"
 
-  info "Starting ERP Sync Dashboard …"
-  nohup python3 "$API_SCRIPT" >> "$api_log" 2>&1 &
-  local new_pid=$!
-  echo "$new_pid" > "$PID_FILE"
+  info "Starting dashboard container …"
+  docker run -d \
+    --name "${CONTAINER_NAME}" \
+    --restart unless-stopped \
+    -p "0.0.0.0:${API_PORT}:8080" \
+    -v "${SCRIPT_DIR}/.env:/app/.env:ro" \
+    -v "${SCRIPT_DIR}/sync.sh:/app/sync.sh:ro" \
+    -v "${LOG_DIR}:${LOG_DIR}" \
+    -v "${BACKUP_DIR}:${BACKUP_DIR}" \
+    -v "/var/spool/cron/crontabs:/var/spool/cron/crontabs" \
+    -v "/var/run/docker.sock:/var/run/docker.sock" \
+    "${IMAGE_NAME}"
 
-  sleep 2   # give Python a moment to bind the port
+  # Give Flask a moment to bind the port
+  sleep 2
 
-  if kill -0 "$new_pid" 2>/dev/null; then
-    ok "Dashboard started  (PID ${new_pid})"
-    ok "URL  : http://$(server_ip):${API_PORT}"
-    ok "Log  : ${api_log}"
+  if docker ps --filter "name=^${CONTAINER_NAME}$" --format "{{.Names}}" | grep -q "^${CONTAINER_NAME}$"; then
+    ok "Dashboard running  →  http://$(server_ip):${API_PORT}"
+    enable_autostart
   else
-    err "Dashboard failed to start. Check log: ${api_log}"
-    rm -f "$PID_FILE"
+    err "Container failed to start. Check logs:"
+    err "  docker logs ${CONTAINER_NAME}"
     exit 1
   fi
 }
 
 cmd_stop() {
-  local pid; pid=$(running_pid)
-  if [[ -z "$pid" ]]; then
+  if docker ps -a --filter "name=^${CONTAINER_NAME}$" --format "{{.Names}}" | grep -q "^${CONTAINER_NAME}$"; then
+    info "Stopping and removing '${CONTAINER_NAME}' …"
+    docker rm -f "${CONTAINER_NAME}"
+    ok "Dashboard stopped."
+  else
     warn "Dashboard is not running."
-    return
   fi
-  info "Stopping dashboard (PID ${pid}) …"
-  kill "$pid" && rm -f "$PID_FILE"
-  ok "Dashboard stopped."
 }
 
 cmd_restart() {
   cmd_stop || true
-  sleep 1
   cmd_start
 }
 
 cmd_status() {
   load_env
-  local pid; pid=$(running_pid)
   echo ""
   echo -e "${BOLD}ERP Sync Dashboard — Status${RESET}"
   echo    "────────────────────────────────"
-  if [[ -n "$pid" ]]; then
-    echo -e "  State  : ${GREEN}● RUNNING${RESET}  (PID ${pid})"
+  if docker ps --filter "name=^${CONTAINER_NAME}$" --format "{{.Names}}" | grep -q "^${CONTAINER_NAME}$"; then
+    echo -e "  State  : ${GREEN}● RUNNING${RESET}  (Docker container)"
     echo -e "  URL    : ${CYAN}http://$(server_ip):${API_PORT}${RESET}"
+    echo -e "  Image  : ${IMAGE_NAME}"
   else
     echo -e "  State  : ${RED}○ STOPPED${RESET}"
     echo    "  Run    : ./start_api.sh start"
@@ -141,15 +164,12 @@ cmd_status() {
 }
 
 cmd_logs() {
-  load_env
-  local api_log="${LOG_DIR}/api.log"
-  if [[ ! -f "$api_log" ]]; then
-    warn "No API log found at: ${api_log}"
-    warn "The dashboard may not have been started yet."
+  if ! docker ps --filter "name=^${CONTAINER_NAME}$" --format "{{.Names}}" | grep -q "^${CONTAINER_NAME}$"; then
+    warn "Dashboard container is not running."
     return
   fi
-  info "Tailing ${api_log}  (Ctrl+C to exit)"
-  tail -f "$api_log"
+  info "Streaming logs from '${CONTAINER_NAME}'  (Ctrl+C to exit)"
+  docker logs -f "${CONTAINER_NAME}"
 }
 
 # ── Entry ─────────────────────────────────────────────────────────────────────
@@ -165,8 +185,9 @@ case "${1:-start}" in
   restart) cmd_restart ;;
   status)  cmd_status ;;
   logs)    cmd_logs ;;
+  build)   cmd_build ;;
   *)
-    echo "Usage: $0 [start|stop|restart|status|logs]"
+    echo "Usage: $0 [start|stop|restart|status|logs|build]"
     exit 1
     ;;
 esac

@@ -1,0 +1,15 @@
+.env
+*.sql.gz
+backups/
+logs/
+.api.pid
+__pycache__/
+*.pyc
+*.pyo
+.git/
+.gitignore
+*.md
+*.sh
+mysql/
+init/
+docker-compose.yml
