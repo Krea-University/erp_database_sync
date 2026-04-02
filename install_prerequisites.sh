@@ -3,11 +3,13 @@
 #  install_prerequisites.sh  –  Install all tools needed for ERP DB Sync
 #
 #  Supported:
-#    Linux  – Ubuntu / Debian / Kali
-#    Linux  – CentOS / RHEL / Fedora / Amazon Linux
+#    Linux  – Ubuntu / Debian / Kali / Linux Mint / Pop!_OS
+#    Linux  – CentOS / RHEL / Fedora / Amazon Linux / Rocky / AlmaLinux
 #    macOS  – via Homebrew
 # =============================================================================
 set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ── Colours ───────────────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
@@ -19,7 +21,6 @@ warn()    { echo -e "${YELLOW}[WARN]${RESET}  $*"; }
 error()   { echo -e "${RED}[ERROR]${RESET} $*" >&2; }
 header()  { echo -e "\n${BOLD}── $* ──${RESET}"; }
 
-# ── Already-installed check ───────────────────────────────────────────────────
 is_installed() { command -v "$1" &>/dev/null; }
 
 # ── Detect OS ─────────────────────────────────────────────────────────────────
@@ -44,17 +45,19 @@ detect_os() {
   info "Detected OS: ${OS}"
 }
 
-# ── Privilege helper ──────────────────────────────────────────────────────────
-SUDO=""
-if [[ "$EUID" -ne 0 ]] && [[ "$OS" != "macos" ]]; then
-  if command -v sudo &>/dev/null; then
-    SUDO="sudo"
-    info "Running as non-root – will use sudo where needed."
-  else
-    error "Not root and sudo not found. Re-run as root or install sudo."
-    exit 1
+# ── Privilege helper (must run AFTER detect_os) ───────────────────────────────
+setup_sudo() {
+  SUDO=""
+  if [[ "$EUID" -ne 0 ]] && [[ "$OS" != "macos" ]]; then
+    if command -v sudo &>/dev/null; then
+      SUDO="sudo"
+      info "Running as non-root — will use sudo where needed."
+    else
+      error "Not root and sudo not found. Re-run as root or install sudo."
+      exit 1
+    fi
   fi
-fi
+}
 
 # =============================================================================
 #  INSTALLERS
@@ -80,7 +83,7 @@ install_jq() {
 install_mysql_client() {
   header "mysql-client / mysqldump"
   if is_installed mysqldump; then
-    success "mysqldump $(mysqldump --version | head -1) already installed."
+    success "mysqldump already installed."
     return
   fi
   info "Installing MySQL client …"
@@ -95,7 +98,6 @@ install_mysql_client() {
       ;;
     macos)
       brew install mysql-client
-      # Homebrew mysql-client is keg-only – add to PATH
       MYSQL_PREFIX="$(brew --prefix mysql-client)"
       if ! grep -q "mysql-client" "${HOME}/.zshrc" 2>/dev/null \
          && ! grep -q "mysql-client" "${HOME}/.bash_profile" 2>/dev/null; then
@@ -105,7 +107,43 @@ install_mysql_client() {
       export PATH="${MYSQL_PREFIX}/bin:${PATH}"
       ;;
   esac
-  success "mysqldump installed: $(mysqldump --version | head -1)"
+  success "mysqldump installed."
+}
+
+# ── Python 3 + pip ────────────────────────────────────────────────────────────
+install_python() {
+  header "Python 3 + pip"
+  if is_installed python3 && is_installed pip3; then
+    success "python3 $(python3 --version 2>&1 | cut -d' ' -f2) + pip3 already installed."
+    return
+  fi
+  info "Installing python3 and pip3 …"
+  case "$OS" in
+    debian) $SUDO apt-get install -y python3 python3-pip ;;
+    rhel)   $SUDO yum install -y python3 python3-pip 2>/dev/null \
+              || $SUDO dnf install -y python3 python3-pip ;;
+    macos)  brew install python3 ;;
+  esac
+  success "python3 $(python3 --version 2>&1 | cut -d' ' -f2) installed."
+}
+
+# ── Flask (web dashboard) ─────────────────────────────────────────────────────
+install_flask() {
+  header "Flask (web dashboard)"
+  if python3 -c "import flask" &>/dev/null 2>&1; then
+    FLASK_VER=$(python3 -c "import flask; print(flask.__version__)" 2>/dev/null)
+    success "Flask ${FLASK_VER} already installed."
+    return
+  fi
+  info "Installing Flask …"
+  REQ_FILE="${SCRIPT_DIR}/requirements.txt"
+  if [[ -f "$REQ_FILE" ]]; then
+    pip3 install -r "$REQ_FILE"
+  else
+    pip3 install "flask>=2.3,<4"
+  fi
+  FLASK_VER=$(python3 -c "import flask; print(flask.__version__)" 2>/dev/null)
+  success "Flask ${FLASK_VER} installed."
 }
 
 # ── Docker ────────────────────────────────────────────────────────────────────
@@ -147,55 +185,15 @@ https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
     success "Docker installed: $(docker --version)"
   fi
 
-  # Start & enable service (Linux only)
+  # Enable & start service; add user to docker group (Linux only)
   if [[ "$OS" != "macos" ]]; then
     $SUDO systemctl enable docker --now 2>/dev/null || true
-    # Add current user to docker group so no sudo needed for docker commands
     if ! groups "$USER" | grep -q docker; then
       $SUDO usermod -aG docker "$USER"
       warn "Added '$USER' to the docker group."
-      warn "Log out and back in (or run: newgrp docker) for group to take effect."
+      warn "Log out and back in (or run: newgrp docker) for it to take effect."
     fi
   fi
-}
-
-# ── Python 3 + pip ───────────────────────────────────────────────────────────
-install_python() {
-  header "Python 3 + pip"
-  if is_installed python3 && is_installed pip3; then
-    success "python3 $(python3 --version 2>&1 | cut -d' ' -f2) + pip3 already installed."
-    return
-  fi
-  info "Installing python3 and pip3 …"
-  case "$OS" in
-    debian) $SUDO apt-get install -y python3 python3-pip ;;
-    rhel)   $SUDO yum install -y python3 python3-pip 2>/dev/null \
-              || $SUDO dnf install -y python3 python3-pip ;;
-    macos)  brew install python3 ;;
-  esac
-  success "python3 $(python3 --version 2>&1 | cut -d' ' -f2) installed."
-}
-
-# ── Flask (web dashboard) ─────────────────────────────────────────────────────
-install_flask() {
-  header "Flask (web dashboard)"
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  REQ_FILE="${SCRIPT_DIR}/requirements.txt"
-
-  if python3 -c "import flask" &>/dev/null 2>&1; then
-    FLASK_VER=$(python3 -c "import flask; print(flask.__version__)" 2>/dev/null)
-    success "Flask ${FLASK_VER} already installed."
-    return
-  fi
-
-  info "Installing Flask …"
-  if [[ -f "$REQ_FILE" ]]; then
-    pip3 install -r "$REQ_FILE"
-  else
-    pip3 install "flask>=2.3,<4"
-  fi
-  FLASK_VER=$(python3 -c "import flask; print(flask.__version__)" 2>/dev/null)
-  success "Flask ${FLASK_VER} installed."
 }
 
 # ── Docker Compose ────────────────────────────────────────────────────────────
@@ -208,7 +206,7 @@ install_docker_compose() {
     return
   fi
 
-  # standalone docker-compose (v1/v2 binary)
+  # v1 standalone binary
   if is_installed docker-compose; then
     success "docker-compose standalone: $(docker-compose --version)"
     return
@@ -219,7 +217,7 @@ install_docker_compose() {
     debian)
       $SUDO apt-get install -y docker-compose-plugin 2>/dev/null || true
       if ! docker compose version &>/dev/null 2>&1; then
-        # Fallback: install standalone binary
+        # Fallback: download standalone binary
         COMPOSE_VERSION=$(curl -fsSL \
           https://api.github.com/repos/docker/compose/releases/latest \
           | grep '"tag_name"' | sed 's/.*"v\([^"]*\)".*/\1/')
@@ -249,25 +247,47 @@ install_docker_compose() {
   fi
 }
 
+# ── Make scripts executable ───────────────────────────────────────────────────
+make_executable() {
+  header "Script permissions"
+  local scripts=(
+    "${SCRIPT_DIR}/setup.sh"
+    "${SCRIPT_DIR}/sync.sh"
+    "${SCRIPT_DIR}/start_api.sh"
+    "${SCRIPT_DIR}/deploy_ubuntu.sh"
+    "${SCRIPT_DIR}/install_prerequisites.sh"
+  )
+  for f in "${scripts[@]}"; do
+    if [[ -f "$f" ]]; then
+      chmod +x "$f"
+      success "chmod +x $(basename "$f")"
+    fi
+  done
+}
+
 # =============================================================================
 #  MAIN
 # =============================================================================
 echo -e "${BOLD}"
-echo "╔══════════════════════════════════════════════════╗"
-echo "║   Krea Onererp — Prerequisites Installer         ║"
-echo "╚══════════════════════════════════════════════════╝"
+echo "╔══════════════════════════════════════════════════════╗"
+echo "║   Krea Onererp — Prerequisites Installer             ║"
+echo "╚══════════════════════════════════════════════════════╝"
 echo -e "${RESET}"
 
+# detect_os MUST run before setup_sudo (sudo helper references $OS)
 detect_os
 
-# Update package index (Linux only, once)
+# Update package index once
 if [[ "$OS" == "debian" ]]; then
   info "Updating apt package index …"
+  setup_sudo
   $SUDO apt-get update -q
 elif [[ "$OS" == "rhel" ]]; then
   info "Updating yum/dnf package index …"
+  setup_sudo
   $SUDO yum makecache -q 2>/dev/null || $SUDO dnf makecache -q
 elif [[ "$OS" == "macos" ]]; then
+  setup_sudo
   if ! is_installed brew; then
     info "Installing Homebrew …"
     /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
@@ -281,12 +301,14 @@ install_python
 install_flask
 install_docker
 install_docker_compose
+make_executable
 
 # ── Final summary ─────────────────────────────────────────────────────────────
 echo ""
 echo -e "${BOLD}── Installation Summary ──${RESET}"
+echo ""
 
-check() {
+check_cmd() {
   local label="$1" cmd="$2"
   if is_installed "$cmd"; then
     echo -e "  ${GREEN}✔${RESET}  ${label}"
@@ -295,13 +317,22 @@ check() {
   fi
 }
 
-check "jq"                              jq
-check "mysqldump"                       mysqldump
-check "python3"                         python3
-check "pip3"                            pip3
-check "docker"                          docker
-check "docker-compose / docker compose" docker-compose
+check_cmd "jq"        jq
+check_cmd "mysqldump" mysqldump
+check_cmd "python3"   python3
+check_cmd "pip3"      pip3
+check_cmd "docker"    docker
 
+# Docker Compose: check v2 plugin first, then v1 binary
+if docker compose version &>/dev/null 2>&1; then
+  echo -e "  ${GREEN}✔${RESET}  Docker Compose  ($(docker compose version --short 2>/dev/null || docker compose version))"
+elif is_installed docker-compose; then
+  echo -e "  ${GREEN}✔${RESET}  docker-compose  (standalone)"
+else
+  echo -e "  ${RED}✘${RESET}  Docker Compose  (not found)"
+fi
+
+# Flask
 if python3 -c "import flask" &>/dev/null 2>&1; then
   FLASK_VER=$(python3 -c "import flask; print(flask.__version__)" 2>/dev/null)
   echo -e "  ${GREEN}✔${RESET}  Flask ${FLASK_VER}"
@@ -310,6 +341,11 @@ else
 fi
 
 echo ""
-info "Next steps:"
-info "  1. ./setup.sh          ← bootstrap MySQL + cron"
-info "  2. python3 api.py      ← start web dashboard on :8080"
+echo -e "${BOLD}── Next Steps ──${RESET}"
+echo ""
+info "  1.  cp .env.example .env && nano .env   ← configure credentials"
+info "  2.  ./setup.sh                          ← bootstrap MySQL + register cron"
+info "  3.  ./start_api.sh start                ← start web dashboard on :${API_PORT:-8080}"
+echo ""
+echo -e "${CYAN}  Dashboard:  http://$(hostname -I 2>/dev/null | awk '{print $1}' || echo 'localhost'):${API_PORT:-8080}${RESET}"
+echo ""
