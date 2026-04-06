@@ -219,6 +219,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ERP Sync Dashboard &mdash; Krea Onererp</title>
+<link rel="icon" type="image/x-icon" href="https://cdn.krea.edu.in/favicon.ico">
 <style>
 :root {
   --bg:         #0d1117;
@@ -524,7 +525,7 @@ body {
   .log-layout { flex-direction: column; }
   .log-sidebar { width: 100%; max-height: 190px; border-right: none; border-bottom: 1px solid var(--border); }
 }
-</style>
+</link>
 </head>
 <body>
 
@@ -599,7 +600,6 @@ body {
       <button class="btn btn-primary" id="btnEnable"  onclick="cronAction('enable')" disabled>&#10003; Enable Cron</button>
       <button class="btn btn-danger"  id="btnDisable" onclick="cronAction('disable')" disabled>&#10007; Disable Cron</button>
       <button class="btn btn-blue"    id="btnRunJob"  onclick="runJobNow()" disabled>&#9654; Run Job Now</button>
-      <button class="btn btn-blue"    id="btnSync"    onclick="triggerSync()" disabled>&#9654; Sync Now</button>
       <button class="btn btn-outline" onclick="refresh()">&#8635; Refresh</button>
       <span class="countdown" id="countdown"></span>
     </div>
@@ -768,7 +768,7 @@ function scrollBottom() {
 // ─── Token validation & button state ──────────────────────────────────────────
 function updateButtonState() {
   const hasToken = !!token;
-  ['btnEnable', 'btnDisable', 'btnRunJob', 'btnSync'].forEach(id => {
+  ['btnEnable', 'btnDisable', 'btnRunJob'].forEach(id => {
     const btn = document.getElementById(id);
     if (btn) btn.disabled = !hasToken;
   });
@@ -777,6 +777,8 @@ function updateButtonState() {
 // ─── Cron control ─────────────────────────────────────────────────────────────
 async function cronAction(action) {
   if (!token) { toast('Enter your API token first', 'r'); return; }
+  const msg = action === 'enable' ? 'Enable the cron job?' : 'Disable the cron job?';
+  if (!confirm(msg)) return;
   const btn      = document.getElementById(action === 'enable' ? 'btnEnable' : 'btnDisable');
   const origHTML = btn.innerHTML;
   btn.disabled   = true;
@@ -790,8 +792,12 @@ async function cronAction(action) {
 }
 
 // ─── Run Job Now ──────────────────────────────────────────────────────────────
+let isRunning = false;
 async function runJobNow() {
   if (!token) { toast('Enter your API token first', 'r'); return; }
+  if (isRunning) return; // Prevent double execution
+  if (!confirm('Run the sync job now?')) return;
+  isRunning = true;
   const btn      = document.getElementById('btnRunJob');
   const origHTML = btn.innerHTML;
   btn.disabled   = true;
@@ -803,24 +809,7 @@ async function runJobNow() {
       ? toast('Job started \u2014 ' + d.log, 'b')
       : toast(d.error || 'Failed to run job', 'r');
     if (r.ok) setTimeout(() => { loadStatus(); loadLogs(); }, 5000);
-  } finally { btn.disabled = false; btn.innerHTML = origHTML; }
-}
-
-// ─── Sync trigger ─────────────────────────────────────────────────────────────
-async function triggerSync() {
-  if (!token) { toast('Enter your API token first', 'r'); return; }
-  const btn      = document.getElementById('btnSync');
-  const origHTML = btn.innerHTML;
-  btn.disabled   = true;
-  btn.innerHTML  = '<span class="spin"></span>Triggering\u2026';
-  try {
-    const r = await fetch('/api/sync/trigger', { method: 'POST', headers: hdrs() });
-    const d = await r.json();
-    r.ok
-      ? toast('Sync started \u2014 ' + d.log, 'b')
-      : toast(d.error || 'Failed to trigger sync', 'r');
-    if (r.ok) setTimeout(() => { loadStatus(); loadLogs(); }, 5000);
-  } finally { btn.disabled = false; btn.innerHTML = origHTML; }
+  } finally { isRunning = false; btn.disabled = false; btn.innerHTML = origHTML; }
 }
 
 // ─── Countdown ────────────────────────────────────────────────────────────────
