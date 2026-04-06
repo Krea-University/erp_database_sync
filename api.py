@@ -525,7 +525,7 @@ body {
   .log-layout { flex-direction: column; }
   .log-sidebar { width: 100%; max-height: 190px; border-right: none; border-bottom: 1px solid var(--border); }
 }
-</link>
+</style>
 </head>
 <body>
 
