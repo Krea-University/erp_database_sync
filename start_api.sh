@@ -61,9 +61,7 @@ enable_autostart() {
   load_env
   local UNIT="/etc/systemd/system/erp_api.service"
   local SUDO_CMD=""; [[ "$EUID" -ne 0 ]] && command -v sudo &>/dev/null && SUDO_CMD="sudo"
-  local VENV_DIR="${SCRIPT_DIR}/.venv"
-  local PYTHON_BIN="${VENV_DIR}/bin/python3"
-  [[ ! -f "$PYTHON_BIN" ]] && PYTHON_BIN=$(command -v python3)
+  local PYTHON_BIN; PYTHON_BIN="$(command -v python3)"
 
   $SUDO_CMD bash -c "cat > ${UNIT}" <<EOF
 [Unit]
@@ -94,58 +92,30 @@ EOF
 cmd_start() {
   load_env
 
+  # Kill existing instance if running
   if is_running; then
-    warn "Dashboard already running (PID $(cat "$PID_FILE")). Use restart to reload."
-    return
+    local old_pid; old_pid=$(cat "$PID_FILE")
+    info "Killing existing instance (PID ${old_pid}) …"
+    kill "$old_pid" 2>/dev/null || true
+    rm -f "$PID_FILE"
+    sleep 1
   fi
 
-  if ! command -v python3 &>/dev/null; then
+  # Use the absolute path of whatever python3 is in PATH
+  local PYTHON_BIN; PYTHON_BIN="$(command -v python3)"
+  if [[ -z "$PYTHON_BIN" ]]; then
     err "python3 not found. Run: ./install_prerequisites.sh"
     exit 1
   fi
 
-  # ── Use a venv so Flask is always found by the launched process ──────────────
-  local VENV_DIR="${SCRIPT_DIR}/.venv"
-  local SUDO_CMD=""; [[ "$EUID" -ne 0 ]] && command -v sudo &>/dev/null && SUDO_CMD="sudo"
-
-  # Ensure python3-venv and pip are available (Ubuntu/Debian)
-  if command -v apt-get &>/dev/null; then
-    if ! python3 -m venv --help &>/dev/null 2>&1; then
-      info "Installing python3-venv …"
-      $SUDO_CMD apt-get install -y python3-venv python3-pip -q
-    fi
-  fi
-
-  # Detect venv python (Linux: bin/python3 / Windows: Scripts/python)
-  venv_python() {
-    [[ -f "${VENV_DIR}/bin/python3"        ]] && echo "${VENV_DIR}/bin/python3"   && return
-    [[ -f "${VENV_DIR}/Scripts/python.exe" ]] && echo "${VENV_DIR}/Scripts/python.exe" && return
-  }
-
-  local PYTHON_BIN; PYTHON_BIN=$(venv_python)
-
-  # If venv missing OR pip broken inside it — rebuild
-  if [[ -z "$PYTHON_BIN" ]] || ! "$PYTHON_BIN" -m pip --version &>/dev/null 2>&1; then
-    info "Creating Python virtual environment (.venv) …"
-    rm -rf "${VENV_DIR}"
-    python3 -m venv --upgrade-deps "${VENV_DIR}" 2>/dev/null \
-      || python3 -m venv "${VENV_DIR}"
-    PYTHON_BIN=$(venv_python)
-    # Bootstrap pip if still missing (ensurepip fallback)
-    if ! "$PYTHON_BIN" -m pip --version &>/dev/null 2>&1; then
-      info "Bootstrapping pip …"
-      "$PYTHON_BIN" -m ensurepip --upgrade 2>/dev/null || \
-        curl -fsSL https://bootstrap.pypa.io/get-pip.py | "$PYTHON_BIN"
-    fi
-  fi
-
+  # Install Flask if missing
   if ! "$PYTHON_BIN" -c "import flask" &>/dev/null 2>&1; then
-    info "Installing Flask into .venv …"
+    info "Installing Flask …"
     local REQ="${SCRIPT_DIR}/requirements.txt"
     if [[ -f "$REQ" ]]; then
-      "$PYTHON_BIN" -m pip install --quiet -r "$REQ"
+      "$PYTHON_BIN" -m pip install -r "$REQ"
     else
-      "$PYTHON_BIN" -m pip install --quiet "flask>=2.3,<4"
+      "$PYTHON_BIN" -m pip install "flask>=2.3,<4"
     fi
     ok "Flask installed."
   fi
@@ -153,23 +123,13 @@ cmd_start() {
   mkdir -p "${LOG_DIR}"
   local API_LOG="${LOG_DIR}/api.log"
 
-  info "Starting dashboard …"
+  info "Starting dashboard in background (${PYTHON_BIN}) …"
   PYTHONIOENCODING=utf-8 nohup "$PYTHON_BIN" "${API_PY}" >> "${API_LOG}" 2>&1 &
   local pid=$!
   echo "$pid" > "$PID_FILE"
 
-  # Give Flask 4 s to bind, then confirm the process is still alive
-  sleep 4
-  if kill -0 "$pid" 2>/dev/null; then
-    ok "Dashboard running (PID ${pid})  →  http://$(server_ip):${API_PORT}"
-    ok "Log: ${API_LOG}"
-    enable_autostart
-  else
-    err "Dashboard crashed at startup. Last log lines:"
-    tail -20 "${API_LOG}" >&2
-    rm -f "$PID_FILE"
-    exit 1
-  fi
+  ok "Dashboard started (PID ${pid})  →  http://$(server_ip):${API_PORT}"
+  ok "Log: ${API_LOG}"
 }
 
 cmd_stop() {

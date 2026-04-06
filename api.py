@@ -88,7 +88,8 @@ def _cron_info():
                 cand = lines[j].strip()
                 if cand and "sync.sh" in cand:
                     disabled = cand.startswith("#")
-                    expr = cand.lstrip("# DISABLED:").strip()
+                    # Use replace() to remove literal "# DISABLED: " prefix (not lstrip which removes chars)
+                    expr = cand.replace("# DISABLED: ", "", 1).lstrip("#").strip()
                     return not disabled, expr
     return False, None
 
@@ -148,6 +149,21 @@ def api_cron_disable():
     if changed:
         _write_crontab("\n".join(new) + "\n")
     return jsonify({"status": "disabled" if changed else "already_disabled"})
+
+
+@app.route("/api/cron/run", methods=["POST"])
+@require_token
+def api_cron_run():
+    """Run the sync job immediately (same as trigger, but under /api/cron/)"""
+    sync_script = str(SCRIPT_DIR / "sync.sh")
+    if not os.path.exists(sync_script):
+        return jsonify({"error": "sync.sh not found"}), 500
+    os.makedirs(LOG_DIR, exist_ok=True)
+    ts       = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = f"{LOG_DIR}/manual_sync_{ts}.log"
+    with open(log_file, "w") as lf:
+        subprocess.Popen(["bash", sync_script], stdout=lf, stderr=lf, start_new_session=True)
+    return jsonify({"status": "running", "log": os.path.basename(log_file)})
 
 
 @app.route("/api/sync/trigger", methods=["POST"])
@@ -580,9 +596,10 @@ body {
   <div class="control-panel">
     <span class="panel-title">&#9881; Quick Actions</span>
     <div class="action-row">
-      <button class="btn btn-primary" id="btnEnable"  onclick="cronAction('enable')">&#10003; Enable Cron</button>
-      <button class="btn btn-danger"  id="btnDisable" onclick="cronAction('disable')">&#10007; Disable Cron</button>
-      <button class="btn btn-blue"    id="btnSync"    onclick="triggerSync()">&#9654; Sync Now</button>
+      <button class="btn btn-primary" id="btnEnable"  onclick="cronAction('enable')" disabled>&#10003; Enable Cron</button>
+      <button class="btn btn-danger"  id="btnDisable" onclick="cronAction('disable')" disabled>&#10007; Disable Cron</button>
+      <button class="btn btn-blue"    id="btnRunJob"  onclick="runJobNow()" disabled>&#9654; Run Job Now</button>
+      <button class="btn btn-blue"    id="btnSync"    onclick="triggerSync()" disabled>&#9654; Sync Now</button>
       <button class="btn btn-outline" onclick="refresh()">&#8635; Refresh</button>
       <span class="countdown" id="countdown"></span>
     </div>
@@ -648,11 +665,17 @@ let cdTimer   = null;
 document.getElementById('tokenInput').addEventListener('keydown', e => {
   if (e.key === 'Enter') saveToken();
 });
+document.getElementById('tokenInput').addEventListener('input', () => {
+  token = document.getElementById('tokenInput').value.trim();
+  updateButtonState();
+});
 if (token) {
   document.getElementById('tokenInput').value = token;
   setConn(true);
+  updateButtonState();
   boot();
 } else {
+  updateButtonState();
   loadStatus();
   startCd();
 }
@@ -661,6 +684,7 @@ function saveToken() {
   token = document.getElementById('tokenInput').value.trim();
   sessionStorage.setItem('erp_token', token);
   setConn(!!token);
+  updateButtonState();
   if (token) boot();
 }
 function setConn(on) {
@@ -741,6 +765,15 @@ function scrollBottom() {
   if (b) b.scrollTop = b.scrollHeight;
 }
 
+// ─── Token validation & button state ──────────────────────────────────────────
+function updateButtonState() {
+  const hasToken = !!token;
+  ['btnEnable', 'btnDisable', 'btnRunJob', 'btnSync'].forEach(id => {
+    const btn = document.getElementById(id);
+    if (btn) btn.disabled = !hasToken;
+  });
+}
+
 // ─── Cron control ─────────────────────────────────────────────────────────────
 async function cronAction(action) {
   if (!token) { toast('Enter your API token first', 'r'); return; }
@@ -753,6 +786,23 @@ async function cronAction(action) {
     const d = await r.json();
     toast(d.status.replace(/_/g, ' '), r.ok ? 'g' : 'r');
     await loadStatus();
+  } finally { btn.disabled = false; btn.innerHTML = origHTML; }
+}
+
+// ─── Run Job Now ──────────────────────────────────────────────────────────────
+async function runJobNow() {
+  if (!token) { toast('Enter your API token first', 'r'); return; }
+  const btn      = document.getElementById('btnRunJob');
+  const origHTML = btn.innerHTML;
+  btn.disabled   = true;
+  btn.innerHTML  = '<span class="spin"></span>Running\u2026';
+  try {
+    const r = await fetch('/api/cron/run', { method: 'POST', headers: hdrs() });
+    const d = await r.json();
+    r.ok
+      ? toast('Job started \u2014 ' + d.log, 'b')
+      : toast(d.error || 'Failed to run job', 'r');
+    if (r.ok) setTimeout(() => { loadStatus(); loadLogs(); }, 5000);
   } finally { btn.disabled = false; btn.innerHTML = origHTML; }
 }
 
