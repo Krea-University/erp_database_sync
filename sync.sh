@@ -71,6 +71,14 @@ prune_on_exit() {
       echo "$log_extras" | xargs rm -f
     fi
   fi
+
+  # ── Prune Docker dangling images and stopped containers ───────────────────
+  if command -v docker &>/dev/null; then
+    local docker_before; docker_before=$(docker system df --format "{{.Size}}" 2>/dev/null | head -1 || true)
+    docker image prune -f &>/dev/null || true
+    docker container prune -f &>/dev/null || true
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Docker pruned dangling images and stopped containers." | tee -a "$_log"
+  fi
 }
 trap prune_on_exit EXIT
 
