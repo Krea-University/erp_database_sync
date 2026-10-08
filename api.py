@@ -33,7 +33,7 @@ ENV_KEYS = {
     "LOG_DIR", "BACKUP_DIR", "STATE_DIR", "API_TOKEN", "API_PORT", "LOG_KEEP_COUNT",
     "BACKUP_KEEP_COUNT", "BACKUP_KEEP_DAYS", "SYNC_MODE", "SYNC_PARALLEL",
     "SYNC_CHANGE_DETECT", "FULL_SYNC_HOUR", "SYNC_EXCLUDE_DBS", "SYNC_EXCLUDE_TABLES",
-    "PROD_DB_HOST", "PROD_DB_PORT", "PROD_DB_USER", "MYSQL_LOCAL_PORT", "MYSQL_BUFFER_POOL",
+    "MYSQL_LOCAL_PORT", "MYSQL_BUFFER_POOL",
 }
 
 
@@ -445,7 +445,7 @@ def api_overview():
         "config":     {k: os.environ.get(k, "") for k in (
             "SYNC_MODE", "SYNC_PARALLEL", "SYNC_CHANGE_DETECT", "FULL_SYNC_HOUR",
             "SYNC_EXCLUDE_DBS", "SYNC_EXCLUDE_TABLES", "BACKUP_KEEP_COUNT", "BACKUP_KEEP_DAYS",
-            "LOG_KEEP_COUNT", "PROD_DB_HOST", "PROD_DB_PORT", "PROD_DB_USER", "MYSQL_LOCAL_PORT",
+            "LOG_KEEP_COUNT", "MYSQL_LOCAL_PORT",
             "MYSQL_BUFFER_POOL")},
     })
 
@@ -1232,7 +1232,6 @@ function renderSystem(d) {
     ['Host', s.hostname], ['CPU / Load', `${s.cpus} cores · ${(s.load || []).join(' / ') || '—'}`],
     ['Memory used', mem], ['Host uptime', s.host_uptime_s ? dur(s.host_uptime_s) : '—'],
     ['Dashboard uptime', `${dur(s.api_uptime_s)} · PID ${s.api_pid}`],
-    ['Production', `${c.PROD_DB_USER || '?'}@${c.PROD_DB_HOST || '?'}:${c.PROD_DB_PORT || 3306}`],
     ['Sync mode', `${c.SYNC_MODE || 'incremental'} · detect: ${c.SYNC_CHANGE_DETECT || 'stats'}`],
     ['Parallel workers', c.SYNC_PARALLEL || '4'],
     ['Daily full sync', c.FULL_SYNC_HOUR !== '' && c.FULL_SYNC_HOUR != null ? `first run after ${c.FULL_SYNC_HOUR}:00` : 'off'],
