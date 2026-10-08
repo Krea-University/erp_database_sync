@@ -113,13 +113,17 @@ install_mysql_client() {
 # ── Python 3 + pip ────────────────────────────────────────────────────────────
 install_python() {
   header "Python 3 + pip"
+  # pigz = parallel gzip (faster dumps); python3-venv = isolated dashboard deps
+  if [[ "$OS" == "debian" ]]; then
+    $SUDO apt-get install -y -q python3-venv pigz >/dev/null 2>&1 || true
+  fi
   if is_installed python3 && is_installed pip3; then
     success "python3 $(python3 --version 2>&1 | cut -d' ' -f2) + pip3 already installed."
     return
   fi
   info "Installing python3 and pip3 …"
   case "$OS" in
-    debian) $SUDO apt-get install -y python3 python3-pip ;;
+    debian) $SUDO apt-get install -y python3 python3-pip python3-venv pigz ;;
     rhel)   $SUDO yum install -y python3 python3-pip 2>/dev/null \
               || $SUDO dnf install -y python3 python3-pip ;;
     macos)  brew install python3 ;;
@@ -127,23 +131,20 @@ install_python() {
   success "python3 $(python3 --version 2>&1 | cut -d' ' -f2) installed."
 }
 
-# ── Flask (web dashboard) ─────────────────────────────────────────────────────
+# ── Flask + waitress (web dashboard) ──────────────────────────────────────────
+# Installed into SCRIPT_DIR/.venv — a system-wide pip install fails on
+# Ubuntu 23.04+ ("externally-managed-environment").
 install_flask() {
-  header "Flask (web dashboard)"
-  if python3 -c "import flask" &>/dev/null 2>&1; then
-    FLASK_VER=$(python3 -c "import flask; print(flask.__version__)" 2>/dev/null)
-    success "Flask ${FLASK_VER} already installed."
-    return
+  header "Dashboard Python dependencies (.venv)"
+  local VENV="${SCRIPT_DIR}/.venv"
+  if [[ ! -x "${VENV}/bin/python" ]]; then
+    python3 -m venv "$VENV" || { warn "python3 -m venv failed — install python3-venv"; return; }
   fi
-  info "Installing Flask …"
-  REQ_FILE="${SCRIPT_DIR}/requirements.txt"
-  if [[ -f "$REQ_FILE" ]]; then
-    pip3 install -r "$REQ_FILE"
-  else
-    pip3 install "flask>=2.3,<4"
-  fi
-  FLASK_VER=$(python3 -c "import flask; print(flask.__version__)" 2>/dev/null)
-  success "Flask ${FLASK_VER} installed."
+  "${VENV}/bin/python" -m pip install -q --upgrade pip
+  "${VENV}/bin/python" -m pip install -q -r "${SCRIPT_DIR}/requirements.txt"
+  sha256sum "${SCRIPT_DIR}/requirements.txt" | cut -d' ' -f1 > "${VENV}/.requirements.sha"
+  FLASK_VER=$("${VENV}/bin/python" -c "import flask; print(flask.__version__)" 2>/dev/null)
+  success "Flask ${FLASK_VER} + waitress installed in .venv"
 }
 
 # ── Docker ────────────────────────────────────────────────────────────────────
@@ -333,9 +334,9 @@ else
 fi
 
 # Flask
-if python3 -c "import flask" &>/dev/null 2>&1; then
-  FLASK_VER=$(python3 -c "import flask; print(flask.__version__)" 2>/dev/null)
-  echo -e "  ${GREEN}✔${RESET}  Flask ${FLASK_VER}"
+if "${SCRIPT_DIR}/.venv/bin/python" -c "import flask" &>/dev/null 2>&1; then
+  FLASK_VER=$("${SCRIPT_DIR}/.venv/bin/python" -c "import flask; print(flask.__version__)" 2>/dev/null)
+  echo -e "  ${GREEN}✔${RESET}  Flask ${FLASK_VER}  (.venv)"
 else
   echo -e "  ${RED}✘${RESET}  Flask  (not installed)"
 fi

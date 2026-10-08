@@ -1,6 +1,7 @@
 .env
 backups/
 logs/
+state/
 .venv/
 *.pyc
 __pycache__/

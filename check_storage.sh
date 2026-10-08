@@ -51,12 +51,12 @@ du -h / --max-depth=4 2>/dev/null | sort -rh | head -10 \
 header "3. Backup Directory  ($BACKUP_DIR)"
 if [[ -d "$BACKUP_DIR" ]]; then
   total=$(du -sh "$BACKUP_DIR" 2>/dev/null | cut -f1)
-  count=$(ls "$BACKUP_DIR"/dump_all_*.sql.gz 2>/dev/null | wc -l | tr -d ' ')
+  count=$(ls -d "$BACKUP_DIR"/run_* "$BACKUP_DIR"/dump_all_*.sql.gz 2>/dev/null | wc -l | tr -d ' ')
   row "Total size:"  "$total"
-  row "Dump files:"  "$count"
+  row "Sync runs:"   "$count"
   echo ""
-  ls -lh "$BACKUP_DIR"/dump_all_*.sql.gz 2>/dev/null \
-    | awk '{printf "  %-10s  %s\n", $5, $9}' || echo "  (none)"
+  du -sh "$BACKUP_DIR"/run_* "$BACKUP_DIR"/dump_all_*.sql.gz 2>/dev/null \
+    | awk '{printf "  %-10s  %s\n", $1, $2}' || echo "  (none)"
 else
   warn "Backup dir not found: $BACKUP_DIR"
 fi
@@ -130,7 +130,7 @@ if command -v docker &>/dev/null; then
   row "Dangling images:"      "$dangling_images"
   row "Stopped containers:"   "$stopped_containers"
   if [[ "$dangling_images" -gt 0 || "$stopped_containers" -gt 0 ]]; then
-    warn "Run: docker image prune -f && docker container prune -f"
+    warn "Run: docker image prune -f   (check stopped containers before 'docker container prune' — it would delete a stopped mysql_local)"
   else
     ok "Nothing to prune"
   fi

@@ -13,6 +13,8 @@ services:
     image: mysql:8.0
     container_name: mysql_local
     restart: unless-stopped
+    # Set MYSQL_BUFFER_POOL in .env to ~50–70% of server RAM (e.g. 4G, 8G)
+    command: --innodb-buffer-pool-size=${MYSQL_BUFFER_POOL:-1G}
     ports:
       - "0.0.0.0:${MYSQL_LOCAL_PORT:-3306}:3306"
     environment:

@@ -1,0 +1,4 @@
+# Shell scripts must keep LF endings, or bash fails with "\r: command not found"
+*.sh   text eol=lf
+*.cnf  text eol=lf
+*.sql  text eol=lf
