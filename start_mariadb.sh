@@ -35,8 +35,9 @@ load_env() {
     err ".env not found at ${ENV_FILE}"
     exit 1
   fi
-  # shellcheck disable=SC1090
-  source "$ENV_FILE"
+  # shellcheck disable=SC1091
+  source "${SCRIPT_DIR}/env_loader.sh"
+  load_env_file "$ENV_FILE"
 
   if [[ -z "${MYSQL_ROOT_PASSWORD:-}" ]]; then
     err "MYSQL_ROOT_PASSWORD is not set in .env"

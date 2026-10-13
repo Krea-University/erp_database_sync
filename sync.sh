@@ -28,8 +28,10 @@ if [[ ! -f "$ENV_FILE" ]]; then
   echo "[ERROR] .env not found at $ENV_FILE"
   exit 1
 fi
-# shellcheck disable=SC1090
-source "$ENV_FILE"
+# .env is parsed as data, not executed (unquoted values with spaces are fine)
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/env_loader.sh"
+load_env_file "$ENV_FILE"
 
 SYSTEM_DBS="'information_schema','performance_schema','mysql','sys'"
 STATE_DIR="${STATE_DIR:-${SCRIPT_DIR}/state}"
@@ -101,14 +103,36 @@ sync_table() {
   rm -f "$errf"
 }
 
+# ── Cron registration (used by setup.sh and the dashboard's Enable Cron) ──────
+install_cron() {
+  local expr="${SYNC_CRON_OVERRIDE:-0 */${SYNC_INTERVAL_HOURS:-2} * * *}"
+  local fields; read -ra fields <<< "$expr"
+  if [[ "${#fields[@]}" -ne 5 ]]; then
+    echo "[ERROR] Invalid cron expression '${expr}' — need 5 fields, e.g. SYNC_CRON_OVERRIDE=\"30 1,4,7 * * *\""
+    exit 1
+  fi
+  local cron_log="${LOG_DIR:-${SCRIPT_DIR}/logs}/cron.log"
+  mkdir -p "$(dirname "$cron_log")"
+  # cron's default PATH (/usr/bin:/bin) misses docker in /usr/local/bin or /snap/bin
+  local cron_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin"
+  local line="${expr} /usr/bin/env PATH=${cron_path} SYNC_TRIGGER=cron bash ${SELF} >> ${cron_log} 2>&1"
+  ( crontab -l 2>/dev/null | grep -Ev "# erp_database_sync|sync\.sh" || true
+    echo "# erp_database_sync"
+    echo "$line"
+  ) | crontab -
+  echo "[OK] Cron registered: ${expr}"
+  echo "     ${line}"
+}
+
 # ── Arguments ─────────────────────────────────────────────────────────────────
 MODE_ARG=""
 case "${1:-}" in
-  --worker)      sync_table "$2"; exit 0 ;;
-  --full)        MODE_ARG="full" ;;
-  --incremental) MODE_ARG="incremental" ;;
-  "")            ;;
-  *) echo "Usage: $0 [--incremental|--full]"; exit 1 ;;
+  --worker)       sync_table "$2"; exit 0 ;;
+  --install-cron) install_cron; exit 0 ;;
+  --full)         MODE_ARG="full" ;;
+  --incremental)  MODE_ARG="incremental" ;;
+  "")             ;;
+  *) echo "Usage: $0 [--incremental|--full|--install-cron]"; exit 1 ;;
 esac
 
 # ── Validate required variables ───────────────────────────────────────────────
@@ -310,6 +334,14 @@ log "Mode    : ${MODE}  (${MODE_REASON}, trigger: ${TRIGGER})"
 log "Workers : ${PARALLEL} parallel  ·  change detection: ${SYNC_CHANGE_DETECT:-stats}"
 
 # ── Verify container is running ───────────────────────────────────────────────
+if ! command -v docker &>/dev/null; then
+  log "[ERROR] 'docker' not found in PATH (${PATH}). Re-register cron: ./sync.sh --install-cron"
+  exit 1
+fi
+if ! docker info &>/dev/null; then
+  log "[ERROR] Cannot talk to Docker as user '$(id -un)'. Is Docker running? Is the user in the 'docker' group?"
+  exit 1
+fi
 MYSQL_CONTAINER=$(docker ps --filter "name=^mysql_local$" --format "{{.Names}}" | head -1)
 if [[ -z "$MYSQL_CONTAINER" ]]; then
   log "[ERROR] Container 'mysql_local' is not running. Run: docker compose up -d"

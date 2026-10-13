@@ -38,8 +38,9 @@ if [[ ! -f "$ENV_FILE" ]]; then
   err "  cp ${SCRIPT_DIR}/.env.example ${SCRIPT_DIR}/.env"
   exit 1
 fi
-# shellcheck disable=SC1090
-source "$ENV_FILE"
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/env_loader.sh"
+load_env_file "$ENV_FILE"
 
 for var in PROD_DB_HOST PROD_DB_USER PROD_DB_PASS MYSQL_ROOT_PASSWORD; do
   if [[ -z "${!var:-}" ]]; then
@@ -151,18 +152,8 @@ else
   CRON_EXPR="0 */${SYNC_INTERVAL_HOURS:-2} * * *"
 fi
 
-CRON_LOG="${LOG_DIR:-/var/erp_sync/logs}/cron.log"
-mkdir -p "$(dirname "$CRON_LOG")"
-CRON_LINE="${CRON_EXPR} /usr/bin/env bash ${SYNC_SCRIPT} >> ${CRON_LOG} 2>&1"
-CRON_MARKER="# erp_database_sync"
-
 if command -v crontab &>/dev/null; then
-  (
-    crontab -l 2>/dev/null | grep -Ev "${CRON_MARKER}|sync\.sh" || true
-    echo "${CRON_MARKER}"
-    echo "${CRON_LINE}"
-  ) | crontab -
-  ok "Cron registered: ${CRON_EXPR}"
+  bash "$SYNC_SCRIPT" --install-cron
 else
   warn "crontab not available. Add manually to Task Scheduler:"
   warn "  bash ${SYNC_SCRIPT}"

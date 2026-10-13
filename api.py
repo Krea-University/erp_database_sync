@@ -475,6 +475,13 @@ def api_cron_enable():
             new.append(line)
     if changed:
         _write_crontab("\n".join(new) + "\n")
+    elif not any("sync.sh" in l for l in lines):
+        # No cron entry at all yet — register one from the schedule in .env
+        r = subprocess.run(["bash", SYNC_SH, "--install-cron"], capture_output=True, text=True,
+                           timeout=30, cwd=str(SCRIPT_DIR))
+        if r.returncode != 0:
+            return jsonify({"error": (r.stdout + r.stderr).strip()[-400:] or "install failed"}), 500
+        return jsonify({"status": "registered"})
     return jsonify({"status": "enabled" if changed else "already_enabled"})
 
 
@@ -517,7 +524,15 @@ def _start_sync():
                                     env={**os.environ, "SYNC_TRIGGER": "dashboard"})
         # Reap the child when it exits so it never lingers as a zombie
         threading.Thread(target=proc.wait, daemon=True).start()
-        time.sleep(0.5)
+        # Report a sync that dies on startup (bad .env, Docker down…) instead of "running"
+        for _ in range(20):
+            if proc.poll() is not None or _current_run():
+                break
+            time.sleep(0.1)
+        if proc.poll() not in (None, 0):
+            tail, _ = _tail_lines(f"{LOG_DIR}/launcher.log", 4)
+            msg = [l for l in tail if l.strip() and "dashboard →" not in l]
+            return jsonify({"error": "Sync failed to start: " + " | ".join(msg or ["see launcher.log"])}), 500
     return jsonify({"status": "running", "mode": mode or os.environ.get("SYNC_MODE", "incremental"),
                     "pid": proc.pid})
 
